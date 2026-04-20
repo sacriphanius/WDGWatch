@@ -1,0 +1,18 @@
+.pio/
+.vscode/
+.idea/
+*.o
+*.obj
+*.elf
+*.bin
+*.map
+.DS_Store
+.cache/
+compile_commands.json
+
+# Local secrets - WiFi credentials
+src/wifi_config.h
+
+# Editor / misc
+*.swp
+.claude/
