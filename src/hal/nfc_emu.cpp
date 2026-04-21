@@ -143,8 +143,16 @@ bool nfc_emu_start(const uint8_t *uid, uint8_t uid_len, const char *ndef_text) {
 bool nfc_emu_loop(void) {
     if (!emu_active) return false;
 
-    // Run listen mode worker (handles interrupts from ST25R3916)
+    // Run listen mode worker (handles interrupts from ST25R3916).
+    // Stock LilyGoLib does not expose rfalRunListenModeWorker; only a fork has
+    // it. NFC card emulation does not work on T-Watch Ultra hardware anyway
+    // (reader-only antenna) so we stub this out to keep CI green.
+#ifdef USE_RFAL_FORK
     NFCReader.getRfalRf()->rfalRunListenModeWorker();
+#else
+    emu_active = false;
+    return false;
+#endif
 
     bool dataFlag = false;
     rfalBitRate lastBR;
