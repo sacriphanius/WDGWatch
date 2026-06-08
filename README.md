@@ -293,6 +293,64 @@ Hem BLE Nordic UART hem de HTTP `POST /api/cmd` istekleri aşağıdaki JSON form
 *   **Yayın Durdur:** `{"cmd":"hid_stop"}`
 *   **HID Durumu Sorgula:** `{"cmd":"hid_status"}`
 *   **SD Karttan Payload Çalıştır:** `{"cmd":"hid_run_script", "params":{"path":"/scripts/payload.txt","ble":true}}`
+*   **Çalışan Scripti İptal Et:** `{"cmd":"hid_abort_script"}`
+
+### 5. Diğer Komutlar / Other Commands
+*   **GPS Aç/Kapat (GPS On/Off):** `{"cmd":"gps_on"}` / `{"cmd":"gps_off"}`
+*   **WiFi Taraması Başlat (Start WiFi Scan):** `{"cmd":"recon_wifi"}`
+*   **BLE Taraması Başlat (Start BLE Scan):** `{"cmd":"recon_ble", "params":{"duration":10}}`
+*   **Tarama Sonuçlarını Getir (Get Scan Results):** `{"cmd":"recon_results"}`
+*   **Tarama İşlemini Durdur (Stop Active Scan):** `{"cmd":"recon_stop"}`
+*   **Hedefli WiFi Deauth Tetikle (Targeted Deauth):** `{"cmd":"recon_deauth", "params":{"bssid":"AA:BB:CC:DD:EE:FF","ch":6}}`
+*   **Deauth Saldırısını Durdur (Stop Deauth):** `{"cmd":"recon_stop"}`
+*   **NFC Okumayı Başlat (Start NFC Scan):** `{"cmd":"nfc_scan"}`
+*   **NFC Okumayı Durdur (Stop NFC Scan):** `{"cmd":"nfc_stop"}`
+*   **Okunan NFC Kartı SD Karta Kaydet (Save Scanned NFC):** `{"cmd":"nfc_save"}`
+*   **NFC Kartlarını Listele (List Saved NFCs):** `{"cmd":"nfc_list"}`
+*   **Kayıtlı NFC Kartı Sil (Delete Saved NFC):** `{"cmd":"nfc_delete", "params":{"idx":0}}`
+*   **NFC Kartı Bilgisayara İndir (Download NFC):** `{"cmd":"nfc_download", "params":{"idx":0}}`
+*   **NFC Kartları Dışa Aktar (Export NFC to Flipper):** `{"cmd":"nfc_export"}`
+*   **LoRa Servisini Başlat (Start LoRa RX/TX):** `{"cmd":"lora_start"}`
+*   **LoRa Servisini Durdur (Stop LoRa):** `{"cmd":"lora_stop"}`
+*   **LoRa Mesajı Gönder (Send LoRa Message):** `{"cmd":"lora_send", "params":{"text":"hello"}}`
+*   **LoRa Düğüm Reklamı Gönder (Send LoRa Advert):** `{"cmd":"lora_advert"}`
+*   **LoRa Geçmişini Yükle (Load LoRa History):** `{"cmd":"lora_history"}`
+*   **Saat Temasını Değiştir (Cycle Watchface):** `{"cmd":"watchface", "params":{"style":"next"}}`
+*   **Sürüm Sorgula (Get Firmware Version):** `{"cmd":"version"}`
+
+---
+
+## 🔵 Bluetooth Terminal Connection Guide / Bağlantı Kılavuzu
+
+### English
+The **SCR Terminal** exposes a Bluetooth Low Energy (BLE) Serial Interface using the **Nordic UART Service (NUS)** protocol. You can use any BLE Terminal App (e.g., *Serial Bluetooth Terminal* on Android, *Bluefy* on iOS, or `bluetoothctl` on Linux) to send JSON commands and receive asynchronous system events.
+
+#### How to Connect:
+1. Open the **WiFi** application on the watch.
+2. Tap the **WATCH DOGS CONNECT** button to enable BLE.
+3. The watch status bar will display `BLE ON` and print a unique 6-digit **BLE PIN** on the serial console or a fullscreen pairing overlay.
+4. Open your BLE Terminal app on your phone/PC and scan for devices.
+5. Connect to the device named **`PipBoy-xxxxx`** (where `xxxxx` is a unique suffix from the MAC address).
+6. Enter the 6-digit PIN displayed on the watch screen when prompted by your system.
+7. Once paired, the watch displays the **WATCH_DOGS** skull screen and dims brightness.
+8. Set your BLE terminal app to use **`\n` (newline / LF)** as the end-of-line character (all JSON commands must end with `\n`).
+9. Send any command from the API list above (e.g., `{"cmd":"status"}\n`).
+
+---
+
+### Türkçe
+**SCR Terminal**, **Nordic UART Service (NUS)** protokolünü kullanarak Bluetooth Low Energy (BLE) üzerinden çalışan bir kablosuz seri terminal sunar. Herhangi bir BLE Terminal uygulaması (örneğin Android'de *Serial Bluetooth Terminal*, iOS'ta *Bluefy* veya Linux'ta `bluetoothctl`) kullanarak cihaza JSON komutları gönderebilir ve sistem durum loglarını canlı olarak alabilirsiniz.
+
+#### Nasıl Bağlanılır:
+1. Saatteki **WiFi** uygulamasını açın.
+2. BLE modülünü aktif hale getirmek için **WATCH DOGS CONNECT** butonuna dokunun.
+3. Saat ekranında `BLE ON` yazısı görünecektir. Cihaz ilk kez eşleşiyorsa ekranda 6 haneli **BLE PIN** kodu belirecektir.
+4. Telefon veya bilgisayarınızdaki BLE Terminal uygulamasını açarak tarama yapın.
+5. **`PipBoy-xxxxx`** (buradaki `xxxxx` MAC adresine özel benzersiz koddur) isimli cihaza bağlanın.
+6. Bağlantı esnasında telefon/PC ekranında şifre istendiğinde, saat ekranındaki 6 haneli PIN kodunu girin.
+7. Eşleşme tamamlandığında saat ekranı **WATCH_DOGS** kuru kafa görseline geçecek ve parlaklığı kısacaktır.
+8. Terminal uygulamanızın satır sonu karakterini **`\n` (LF / satır sonu)** olarak ayarlayın (JSON komutları `\n` ile sonlanmak zorundadır).
+9. Yukarıdaki API listesinde yer alan herhangi bir komutu gönderin (örneğin: `{"cmd":"status"}\n`).
 
 ---
 
