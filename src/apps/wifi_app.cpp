@@ -11,11 +11,6 @@
 #if __has_include("../wifi_config.h")
 #include "../wifi_config.h"
 #else
-struct WiFiNetwork {
-    const char *ssid;
-    const char *password;
-    bool hidden;
-};
 static const WiFiNetwork wifi_networks[] = {
     {"", "", false},
 };
