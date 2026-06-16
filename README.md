@@ -69,6 +69,11 @@ Leverages the onboard SX1262 transceiver to provide RF security research tools:
 *   **Air Mouse:** Controls mouse cursor using built-in IMU sensor movements. Watch screen provides Left Click, Right Click, and touch-sensitive Scroll wheel.
 *   **Smart USB/HID Lifecycle Management:** Automatically disconnects/restores USB CDC serial port (`/dev/ttyACM0`) when toggling HID services to prevent connection hangs.
 
+### 8. 🎤 Audio Recorder (Mic to SD)
+*   **Voice Sniffing & Audio Capturing:** Integrated directly into the **Recon** suite, allowing users to record ambient environment audio directly via the watch's built-in PDM microphone.
+*   **Structured SD Card Storage:** Automatically creates a `/rec` directory on the SD card if it does not exist, naming recorded files sequentially as `recrd_1.wav`, `recrd_2.wav`, `recrd_3.wav`, etc.
+*   **Hardware Integrity Protection:** Uses clean I2S lifecycle hooks (`i2s_driver_uninstall`) before and after recording to eliminate pin-sharing and hardware bus lockups with other audio features.
+
 ---
 
 ## 📊 Feature Matrix (English)
@@ -96,6 +101,7 @@ Leverages the onboard SX1262 transceiver to provide RF security research tools:
 | ⌨️ **BadUSB/BadBLE Keyboard** | 🟢 Yes | 🟢 Yes | `hid_status` | SCR-Keyboard |
 | 🔒 **Retro Boot Sequence** | 🟢 Yes | 🔴 No | — | Gesture Locked |
 | 🕰️ **Dynamic Timezone & NTP Sync** | 🟢 Yes | 🔴 No | — | Stable |
+| 🎤 **Audio Recorder (Mic to SD)** | 🟢 Yes | 🔴 No | — | 16kHz 16-bit Mono |
 
 ---
 
@@ -294,6 +300,11 @@ SX1262 alıcı-vericisini kullanarak güvenlik araştırması araçları sunar:
 *   **Air Mouse:** Dahili IMU hareketleriyle fare imleci kontrolü. Ekran üzeri Sol/Sağ tık ve Scroll bar desteği.
 *   **USB/HID Yaşam Döngüsü Yönetimi:** HID aktifken seri port (`/dev/ttyACM0`) çakışmalarını önlemek için USB PHY modüllerini otomatik yönetir.
 
+### 8. 🎤 Ses Kaydedici (SD Karta Kayıt)
+*   **Ortam Sesi Yakalama:** **Recon** menüsüne entegre edilen bu özellik sayesinde, saatin dahili PDM mikrofonu kullanılarak ortamdaki sesler doğrudan yakalanır.
+*   **Düzenli SD Klasör Yapısı:** SD kart üzerinde `/rec` klasörü yoksa otomatik olarak oluşturulur ve kaydedilen dosyalar ardışık olarak `recrd_1.wav`, `recrd_2.wav` vb. şeklinde isimlendirilir.
+*   **I2S Yaşam Döngüsü Koruması:** I2S donanım çakışmalarını ve kilitlenmelerini önlemek adına, ses kaydı başlangıcında ve bitişinde sürücüler (`i2s_driver_uninstall`) temiz bir şekilde yönetilir.
+
 ---
 
 ## 📊 Özellik Tablosu (Türkçe)
@@ -321,6 +332,7 @@ SX1262 alıcı-vericisini kullanarak güvenlik araştırması araçları sunar:
 | ⌨️ **BadUSB/BadBLE Klavye (HID)** | 🟢 Evet | 🟢 Evet | `hid_status` | SCR-Keyboard |
 | 🔒 **Retro Boot Ekranı** | 🟢 Evet | 🔴 Hayır | — | El Hareketi Kilitli |
 | 🕰️ **Dinamik Saat Dilimi ve NTP** | 🟢 Evet | 🔴 Hayır | — | Kararlı |
+| 🎤 **Ses Kaydedici (SD Karta Kayıt)** | 🟢 Evet | 🔴 Hayır | — | 16kHz 16-bit Mono |
 
 ---
 
@@ -453,3 +465,33 @@ Hem BLE Nordic UART hem de HTTP `POST /api/cmd` istekleri tek satırlık, `\n` (
 > **English:** This firmware and its features (such as RF transmission, Wi-Fi deauthentication, packet sniffing, etc.) are developed strictly for educational, testing, and authorized security research purposes. The developers and contributors take no responsibility for any misuse, damage, or legal consequences resulting from illegal operations of this software. Always comply with local radio communication and cybersecurity laws.
 > 
 > **Türkçe:** Bu yazılım ve içerdiği özellikler (RF sinyal gönderimi, Wi-Fi deauth, paket koklama vb.) yalnızca eğitim, test ve yetkili güvenlik araştırmaları amacıyla geliştirilmiştir. Geliştiriciler ve katkıda bulunanlar, bu yazılımın yasal olmayan veya zararlı amaçlarla kullanılmasından ötürü hiçbir sorumluluk veya yasal yükümlülük kabul etmez. Her zaman yerel radyo frekansı ve siber güvenlik yasalarına uyunuz.
+
+---
+
+## 📄 License & Copyright / Lisans ve Telif Hakkı
+
+### English
+**Copyright (C) 2026 sacriphanius. All rights reserved.**
+
+This program is free software: you can redistribute it and/or modify it under the terms of the **GNU General Public License v3 (GPLv3)** as published by the Free Software Foundation.
+
+Under this license:
+*   **Ownership Protection:** The original copyright remains with the author (`sacriphanius`). No one may claim sole ownership of this project or its derivatives.
+*   **Copyleft Condition:** Any modified versions or derivative works of this software **must** also be open-source and licensed under the same GPLv3 license.
+*   **Liability:** This software is provided "as is", without warranty of any kind.
+
+For the full license terms, see the [LICENSE](file:///home/sacriphanius/Masaüstü/xiaozhieyes/WDGWatch/LICENSE) file.
+
+---
+
+### Türkçe
+**Telif Hakkı (C) 2026 sacriphanius. Tüm Hakları Saklıdır.**
+
+Bu program özgür bir yazılımdır: Free Software Foundation tarafından yayınlanan **GNU Genel Kamu Lisansı v3 (GPLv3)** koşulları altında yeniden dağıtabilir ve/veya değiştirebilirsiniz.
+
+Bu lisans kapsamında:
+*   **Mülkiyet Koruması:** Orijinal telif hakları yazara (`sacriphanius`) aittir. Hiç kimse bu projenin veya türevlerinin tek başına hak sahibi olduğunu iddia edemez.
+*   **Paylaşım Koşulu (Copyleft):** Bu yazılımın değiştirilmiş veya türetilmiş herhangi bir sürümü de **açık kaynak kodlu** olmak ve aynı GPLv3 lisansı altında dağıtılmak zorundadır.
+*   **Sorumluluk:** Bu yazılım, herhangi bir garanti verilmeksizin "olduğu gibi" sunulmaktadır.
+
+Tüm lisans koşulları için [LICENSE](file:///home/sacriphanius/Masaüstü/xiaozhieyes/WDGWatch/LICENSE) dosyasına bakabilirsiniz.

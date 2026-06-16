@@ -15,6 +15,10 @@
 #include "../ui/watchface.h"
 #include "../ui/action_overlay.h"
 #include "../hal/hid_service.h"
+#include "../apps/gps_app.h"
+#include "../hal/rf_service.h"
+#include <SD.h>
+#include <FS.h>
 
 static AsyncWebServer server(80);
 static AsyncWebSocket ws("/ws");
@@ -97,7 +101,7 @@ static void push_status(void) {
     if (instance.gps.location.isValid()) {
         char g[32]; snprintf(g, sizeof(g), "%.4f,%.4f", instance.gps.location.lat(), instance.gps.location.lng());
         doc["gps"] = g;
-    } else if (svc_gps || instance.gps.charsProcessed() > 10) {
+    } else if (gps_app_is_enabled() || instance.gps.charsProcessed() > 10) {
         doc["gps"] = "NO FIX";
     } else {
         doc["gps"] = "OFF";
@@ -282,6 +286,206 @@ static void setup_routes(void) {
         if (resp) free(resp);
     });
 
+    
+    server.on("/api/rf/jammer/start", HTTP_POST, [](AsyncWebServerRequest *req) {
+        uint32_t freq = 433920000;
+        if (req->hasParam("freq", true)) {
+            freq = req->getParam("freq", true)->value().toInt();
+        }
+        rf_jammer_start(freq);
+        req->send(200, "application/json", "{\"msg\":\"Jammer started\"}");
+    });
+    server.on("/api/rf/jammer/stop", HTTP_POST, [](AsyncWebServerRequest *req) {
+        rf_jammer_stop();
+        req->send(200, "application/json", "{\"msg\":\"Jammer stopped\"}");
+    });
+    server.on("/api/rf/tesla", HTTP_POST, [](AsyncWebServerRequest *req) {
+        rf_tesla_send();
+        req->send(200, "application/json", "{\"msg\":\"Tesla command sent\"}");
+    });
+    server.on("/api/rf/status", HTTP_GET, [](AsyncWebServerRequest *req) {
+        JsonDocument doc;
+        doc["jammer"] = rf_jammer_is_active();
+        doc["freq"] = rf_jammer_get_freq();
+        doc["tesla"] = rf_tesla_is_sending();
+        String out;
+        serializeJson(doc, out);
+        req->send(200, "application/json", out);
+    });
+
+    
+    server.on("/api/sd/list", HTTP_GET, [](AsyncWebServerRequest *req) {
+        String path = "/";
+        if (req->hasParam("path")) {
+            path = req->getParam("path")->value();
+        }
+        if (!path.startsWith("/")) path = "/" + path;
+        
+        File root = SD.open(path);
+        if (!root || !root.isDirectory()) {
+            req->send(404, "application/json", "{\"error\":\"Directory not found\"}");
+            return;
+        }
+
+        JsonDocument doc;
+        doc["path"] = path;
+        
+        String parent = "/";
+        if (path != "/") {
+            int idx = path.lastIndexOf('/');
+            if (idx > 0) {
+                parent = path.substring(0, idx);
+            } else {
+                parent = "/";
+            }
+        }
+        doc["parent"] = parent;
+
+        JsonArray arr = doc["items"].to<JsonArray>();
+        File file = root.openNextFile();
+        while (file) {
+            JsonObject item = arr.add<JsonObject>();
+            item["name"] = String(file.name());
+            item["isDir"] = file.isDirectory();
+            if (!file.isDirectory()) {
+                item["size"] = file.size();
+            }
+            file = root.openNextFile();
+        }
+        root.close();
+
+        String response;
+        serializeJson(doc, response);
+        req->send(200, "application/json", response);
+    });
+
+    server.on("/api/sd/mkdir", HTTP_POST, [](AsyncWebServerRequest *req) {
+        String path = "/";
+        String name = "";
+        if (req->hasParam("path", true)) path = req->getParam("path", true)->value();
+        if (req->hasParam("name", true)) name = req->getParam("name", true)->value();
+
+        if (name.length() == 0) {
+            req->send(400, "application/json", "{\"error\":\"Invalid folder name\"}");
+            return;
+        }
+
+        if (!path.endsWith("/")) path += "/";
+        String fullPath = path + name;
+        if (!fullPath.startsWith("/")) fullPath = "/" + fullPath;
+
+        if (SD.mkdir(fullPath)) {
+            req->send(200, "application/json", "{\"ok\":true}");
+        } else {
+            req->send(500, "application/json", "{\"error\":\"mkdir failed\"}");
+        }
+    });
+
+    server.on("/api/sd/delete", HTTP_POST, [](AsyncWebServerRequest *req) {
+        String path = "";
+        if (req->hasParam("path", true)) path = req->getParam("path", true)->value();
+
+        if (path.length() == 0 || path == "/") {
+            req->send(400, "application/json", "{\"error\":\"Invalid path\"}");
+            return;
+        }
+
+        if (!path.startsWith("/")) path = "/" + path;
+
+        bool success = false;
+        File f = SD.open(path);
+        if (f) {
+            bool isDir = f.isDirectory();
+            f.close();
+            if (isDir) {
+                success = SD.rmdir(path);
+            } else {
+                success = SD.remove(path);
+            }
+        } else {
+            success = SD.remove(path) || SD.rmdir(path);
+        }
+
+        if (success) {
+            req->send(200, "application/json", "{\"ok\":true}");
+        } else {
+            req->send(500, "application/json", "{\"error\":\"delete failed\"}");
+        }
+    });
+
+    server.on("/api/sd/rename", HTTP_POST, [](AsyncWebServerRequest *req) {
+        String path = "";
+        String newPath = "";
+        if (req->hasParam("path", true)) path = req->getParam("path", true)->value();
+        if (req->hasParam("newPath", true)) newPath = req->getParam("newPath", true)->value();
+
+        if (path.length() == 0 || newPath.length() == 0) {
+            req->send(400, "application/json", "{\"error\":\"Invalid arguments\"}");
+            return;
+        }
+
+        if (!path.startsWith("/")) path = "/" + path;
+        if (!newPath.startsWith("/")) newPath = "/" + newPath;
+
+        if (SD.rename(path, newPath)) {
+            req->send(200, "application/json", "{\"ok\":true}");
+        } else {
+            req->send(500, "application/json", "{\"error\":\"rename failed\"}");
+        }
+    });
+
+    server.on("/api/sd/download", HTTP_GET, [](AsyncWebServerRequest *req) {
+        if (!req->hasParam("path")) {
+            req->send(400, "text/plain", "Missing path");
+            return;
+        }
+        String path = req->getParam("path")->value();
+        if (!path.startsWith("/")) path = "/" + path;
+
+        if (!SD.exists(path)) {
+            req->send(404, "text/plain", "File not found");
+            return;
+        }
+        req->send(SD, path, "application/octet-stream", true);
+    });
+
+    server.on("/api/sd/upload", HTTP_POST, [](AsyncWebServerRequest *request){
+        if (request->_tempObject) {
+            request->send(500, "application/json", "{\"error\":\"Upload failed\"}");
+        } else {
+            request->send(200, "application/json", "{\"ok\":true}");
+        }
+    }, [](AsyncWebServerRequest *request, String filename, size_t index, uint8_t *data, size_t len, bool final){
+        static File uploadFile;
+        if(!index){
+            String path = "/";
+            if(request->hasParam("path")) {
+                path = request->getParam("path")->value();
+            }
+            if(!path.endsWith("/")) path += "/";
+            String fullPath = path + filename;
+            if(!fullPath.startsWith("/")) fullPath = "/" + fullPath;
+            
+            if (SD.exists(fullPath)) {
+                SD.remove(fullPath);
+            }
+            uploadFile = SD.open(fullPath, FILE_WRITE);
+            if (!uploadFile) {
+                request->_tempObject = (void*)1;
+            } else {
+                request->_tempObject = nullptr;
+            }
+        }
+        if(uploadFile){
+            if (uploadFile.write(data, len) != len) {
+                request->_tempObject = (void*)1;
+            }
+        }
+        if(final){
+            if(uploadFile) uploadFile.close();
+        }
+    });
+
     server.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest *req) {
         flag_reboot = true;
         req->send(200, "application/json", "{\"msg\":\"Rebooting...\"}");
@@ -333,6 +537,8 @@ void web_server_init(void) {
     if (active) return;
 
     WiFi.mode(WIFI_AP_STA);
+    IPAddress defaultIP(192, 168, 4, 1);
+    WiFi.softAPConfig(defaultIP, defaultIP, IPAddress(255, 255, 255, 0));
     for (int attempt = 0; attempt < 3; attempt++) {
         if (WiFi.softAP("SCR Terminal", "pip12345")) break;
         Serial.printf("[WEB] AP attempt %d failed, retrying...\n", attempt);
@@ -407,7 +613,7 @@ static void process_hw_flags(void) {
     if (flag_watchface_prev) { flag_watchface_prev = false; watchface_prev(); }
     if (flag_service_change) {
         flag_service_change = false;
-        if (strcmp(pending_svc, "gps") == 0)    { instance.powerControl(POWER_GPS, pending_svc_en); svc_gps = pending_svc_en; }
+        if (strcmp(pending_svc, "gps") == 0)    { gps_app_set_enabled(pending_svc_en); svc_gps = pending_svc_en; }
         else if (strcmp(pending_svc, "nfc") == 0) { instance.powerControl(POWER_NFC, pending_svc_en); svc_nfc = pending_svc_en; }
         else if (strcmp(pending_svc, "haptic") == 0) { haptic_set_enabled(pending_svc_en); }
     }

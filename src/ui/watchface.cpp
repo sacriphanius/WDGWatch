@@ -7,8 +7,17 @@
 #include "../hal/ble_uart_service.h"
 #include "../hal/lora_service.h"
 #include "../hal/recon_service.h"
+#include <LilyGoLib.h>
+#include "../hal/haptic.h"
+#include "../hal/power_hal.h"
+#include "../app_manager.h"
+#include "../hal/audio_record.h"
 
 #define LV_SYMBOL_SMILE "\xEF\x84\x98"
+#ifdef LV_SYMBOL_BELL
+#undef LV_SYMBOL_BELL
+#endif
+#define LV_SYMBOL_BELL "\xEF\x83\xA3"
 
 #define G  PIPBOY_GREEN_16
 #define D  PIPBOY_GREEN_DIM_16
@@ -32,6 +41,329 @@ static uint8_t c_bat = 0;
 static bool c_charging = false;
 static bool c_ntp = false, c_wifi = false, c_gps = false;
 static uint32_t c_steps = 0;
+
+static bool alarm_enabled = false;
+static uint8_t alarm_hour = 12;
+static uint8_t alarm_min = 0;
+static bool alarm_triggered = false;
+static bool alarm_active_ringing = false;
+
+static lv_obj_t *lbl_alarm_bell = nullptr;
+static lv_obj_t *alarm_win = nullptr;
+static lv_obj_t *lbl_alarm_hour = nullptr;
+static lv_obj_t *lbl_alarm_min = nullptr;
+static lv_obj_t *btn_alarm_toggle = nullptr;
+static lv_obj_t *lbl_alarm_toggle = nullptr;
+
+static lv_obj_t *alarm_ring_win = nullptr;
+static lv_obj_t *alarm_ring_bell = nullptr;
+static lv_obj_t *ring_btns[3] = {nullptr, nullptr, nullptr};
+static bool btn_states[3] = {false, false, false};
+static lv_timer_t *alarm_timer = nullptr;
+static bool bell_flash_state = false;
+
+bool watchface_alarm_is_ringing(void) {
+    return alarm_active_ringing;
+}
+
+bool watchface_alarm_is_enabled(void) {
+    return alarm_enabled;
+}
+
+static void play_alarm_sound(int duration_ms, int freq_hz) {
+    instance.powerControl(POWER_SPEAK, true);
+    int sample_rate = 160000;
+    int samples_per_cycle = sample_rate / freq_hz;
+    int half_cycle = samples_per_cycle / 2;
+    if (half_cycle < 1) half_cycle = 1;
+    
+    int total_samples = (sample_rate * duration_ms) / 1000;
+    const int chunk_size = 512;
+    int16_t *buf = (int16_t*)malloc(chunk_size * 2 * sizeof(int16_t));
+    if (!buf) {
+        instance.powerControl(POWER_SPEAK, false);
+        return;
+    }
+    
+    int sample_idx = 0;
+    int samples_written = 0;
+    while (samples_written < total_samples) {
+        int to_write = total_samples - samples_written;
+        if (to_write > chunk_size) to_write = chunk_size;
+        for (int i = 0; i < to_write; i++) {
+            int16_t val = ((sample_idx / half_cycle) % 2) ? 8000 : -8000;
+            buf[i * 2] = val;
+            buf[i * 2 + 1] = val;
+            sample_idx++;
+        }
+        instance.player.write((void*)buf, to_write * 2 * sizeof(int16_t));
+        samples_written += to_write;
+    }
+    free(buf);
+    instance.powerControl(POWER_SPEAK, false);
+}
+
+static void dismiss_alarm_cb(lv_event_t *e) {
+    alarm_active_ringing = false;
+    if (alarm_ring_win) {
+        lv_obj_delete(alarm_ring_win);
+        alarm_ring_win = nullptr;
+    }
+    if (alarm_timer) {
+        lv_timer_delete(alarm_timer);
+        alarm_timer = nullptr;
+    }
+    haptic_success();
+    app_manager_show(APP_WATCHFACE);
+}
+
+static void alarm_timer_cb(lv_timer_t *t) {
+    if (!alarm_active_ringing) return;
+    haptic_alarm();
+    play_alarm_sound(150, 1000);
+    
+    bell_flash_state = !bell_flash_state;
+    if (alarm_ring_bell) {
+        lv_obj_set_style_text_color(alarm_ring_bell, bell_flash_state ? G : DK, 0);
+    }
+}
+
+static void ring_btn_click_cb(lv_event_t *e) {
+    lv_obj_t *btn = (lv_obj_t*)lv_event_get_target(e);
+    int idx = -1;
+    for (int i = 0; i < 3; i++) {
+        if (ring_btns[i] == btn) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx == -1) return;
+    
+    btn_states[idx] = !btn_states[idx];
+    haptic_click();
+    
+    if (btn_states[idx]) {
+        lv_obj_set_style_bg_color(btn, G, 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+    } else {
+        lv_obj_set_style_bg_color(btn, BG, 0);
+        lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
+    }
+    
+    if (btn_states[0] && btn_states[1] && btn_states[2]) {
+        dismiss_alarm_cb(nullptr);
+    }
+}
+
+static void trigger_alarm(void) {
+    if (power_hal_screen_is_off()) {
+        power_hal_screen_toggle();
+    }
+    
+    haptic_alarm();
+    alarm_active_ringing = true;
+    bell_flash_state = true;
+    for (int i = 0; i < 3; i++) btn_states[i] = false;
+    
+    alarm_ring_win = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(alarm_ring_win);
+    lv_obj_set_size(alarm_ring_win, 410, 502);
+    lv_obj_set_style_bg_color(alarm_ring_win, BG, 0);
+    lv_obj_set_style_bg_opa(alarm_ring_win, LV_OPA_COVER, 0);
+    lv_obj_center(alarm_ring_win);
+    
+    lv_obj_add_flag(alarm_ring_win, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(alarm_ring_win, LV_OBJ_FLAG_SCROLLABLE);
+    
+    alarm_ring_bell = lv_label_create(alarm_ring_win);
+    lv_label_set_text(alarm_ring_bell, "WAKE UP!");
+    lv_obj_set_style_text_color(alarm_ring_bell, G, 0);
+    lv_obj_set_style_text_font(alarm_ring_bell, &lv_font_montserrat_48, 0);
+    lv_obj_align(alarm_ring_bell, LV_ALIGN_CENTER, 0, -80);
+    
+    lv_obj_t *lbl_title = lv_label_create(alarm_ring_win);
+    lv_label_set_text(lbl_title, "DEACTIVATE PROTOCOL");
+    lv_obj_set_style_text_color(lbl_title, G, 0);
+    lv_obj_set_style_text_font(lbl_title, &lv_font_montserrat_18, 0);
+    lv_obj_align(lbl_title, LV_ALIGN_CENTER, 0, 10);
+    
+    int start_x = CX - 85;
+    for (int i = 0; i < 3; i++) {
+        ring_btns[i] = lv_button_create(alarm_ring_win);
+        lv_obj_set_size(ring_btns[i], 50, 50);
+        lv_obj_set_pos(ring_btns[i], start_x + (i * 60), 310);
+        lv_obj_set_style_bg_color(ring_btns[i], BG, 0);
+        lv_obj_set_style_bg_opa(ring_btns[i], LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_color(ring_btns[i], G, 0);
+        lv_obj_set_style_border_width(ring_btns[i], 2, 0);
+        lv_obj_set_style_radius(ring_btns[i], 0, 0);
+        lv_obj_add_event_cb(ring_btns[i], ring_btn_click_cb, LV_EVENT_CLICKED, nullptr);
+    }
+    
+    alarm_timer = lv_timer_create(alarm_timer_cb, 1000, nullptr);
+}
+
+static void hour_up_cb(lv_event_t *e) {
+    alarm_hour = (alarm_hour + 1) % 24;
+    char buf[4]; snprintf(buf, sizeof(buf), "%02d", alarm_hour);
+    lv_label_set_text(lbl_alarm_hour, buf);
+    haptic_click();
+}
+
+static void hour_down_cb(lv_event_t *e) {
+    alarm_hour = (alarm_hour + 23) % 24;
+    char buf[4]; snprintf(buf, sizeof(buf), "%02d", alarm_hour);
+    lv_label_set_text(lbl_alarm_hour, buf);
+    haptic_click();
+}
+
+static void min_up_cb(lv_event_t *e) {
+    alarm_min = (alarm_min + 1) % 60;
+    char buf[4]; snprintf(buf, sizeof(buf), "%02d", alarm_min);
+    lv_label_set_text(lbl_alarm_min, buf);
+    haptic_click();
+}
+
+static void min_down_cb(lv_event_t *e) {
+    alarm_min = (alarm_min + 59) % 60;
+    char buf[4]; snprintf(buf, sizeof(buf), "%02d", alarm_min);
+    lv_label_set_text(lbl_alarm_min, buf);
+    haptic_click();
+}
+
+static void update_toggle_button_style(void) {
+    if (!btn_alarm_toggle || !lbl_alarm_toggle) return;
+    if (alarm_enabled) {
+        lv_label_set_text(lbl_alarm_toggle, "ALARM: ON");
+        lv_obj_set_style_bg_color(btn_alarm_toggle, G, 0);
+        lv_obj_set_style_bg_opa(btn_alarm_toggle, LV_OPA_COVER, 0);
+        lv_obj_set_style_text_color(lbl_alarm_toggle, BG, 0);
+    } else {
+        lv_label_set_text(lbl_alarm_toggle, "ALARM: OFF");
+        lv_obj_set_style_bg_color(btn_alarm_toggle, BG, 0);
+        lv_obj_set_style_bg_opa(btn_alarm_toggle, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_text_color(lbl_alarm_toggle, D, 0);
+        lv_obj_set_style_border_color(btn_alarm_toggle, D, 0);
+    }
+}
+
+static void alarm_toggle_cb(lv_event_t *e) {
+    alarm_enabled = !alarm_enabled;
+    update_toggle_button_style();
+    if (lbl_alarm_bell) {
+        lv_obj_set_style_text_color(lbl_alarm_bell, alarm_enabled ? G : D, 0);
+    }
+    haptic_click();
+}
+
+static void alarm_close_cb(lv_event_t *e) {
+    if (alarm_win) {
+        lv_obj_delete(alarm_win);
+        alarm_win = nullptr;
+    }
+    haptic_click();
+}
+
+static lv_obj_t* make_adjust_btn(lv_obj_t *par, int x, int y, const char *txt, lv_event_cb_t cb) {
+    lv_obj_t *btn = lv_button_create(par);
+    lv_obj_set_size(btn, 60, 40);
+    lv_obj_set_pos(btn, x, y);
+    lv_obj_set_style_bg_color(btn, BG, 0);
+    lv_obj_set_style_border_color(btn, D, 0);
+    lv_obj_set_style_border_width(btn, 1, 0);
+    lv_obj_set_style_radius(btn, 0, 0);
+    lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, nullptr);
+    
+    lv_obj_t *l = lv_label_create(btn);
+    lv_label_set_text(l, txt);
+    lv_obj_set_style_text_color(l, G, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_18, 0);
+    lv_obj_center(l);
+    return btn;
+}
+
+static void alarm_bell_click_cb(lv_event_t *e) {
+    haptic_click();
+    if (alarm_win) return;
+    
+    alarm_win = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(alarm_win);
+    lv_obj_set_size(alarm_win, 300, 340);
+    lv_obj_set_style_bg_color(alarm_win, BG, 0);
+    lv_obj_set_style_bg_opa(alarm_win, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(alarm_win, G, 0);
+    lv_obj_set_style_border_width(alarm_win, 2, 0);
+    lv_obj_set_style_radius(alarm_win, 5, 0);
+    lv_obj_center(alarm_win);
+    
+    lv_obj_add_flag(alarm_win, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(alarm_win, LV_OBJ_FLAG_SCROLLABLE);
+    
+    lv_obj_t *title = lv_label_create(alarm_win);
+    lv_label_set_text(title, "[ ALARM SETTINGS ]");
+    lv_obj_set_style_text_color(title, G, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 20);
+    
+    make_adjust_btn(alarm_win, 60, 65, LV_SYMBOL_UP, hour_up_cb);
+    
+    lbl_alarm_hour = lv_label_create(alarm_win);
+    char hbuf[4]; snprintf(hbuf, sizeof(hbuf), "%02d", alarm_hour);
+    lv_label_set_text(lbl_alarm_hour, hbuf);
+    lv_obj_set_style_text_color(lbl_alarm_hour, G, 0);
+    lv_obj_set_style_text_font(lbl_alarm_hour, &lv_font_montserrat_28, 0);
+    lv_obj_set_size(lbl_alarm_hour, 60, 40);
+    lv_obj_set_style_text_align(lbl_alarm_hour, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(lbl_alarm_hour, 60, 115);
+    
+    make_adjust_btn(alarm_win, 60, 165, LV_SYMBOL_DOWN, hour_down_cb);
+    
+    lv_obj_t *colon = lv_label_create(alarm_win);
+    lv_label_set_text(colon, ":");
+    lv_obj_set_style_text_color(colon, G, 0);
+    lv_obj_set_style_text_font(colon, &lv_font_montserrat_28, 0);
+    lv_obj_set_pos(colon, 145, 115);
+    
+    make_adjust_btn(alarm_win, 180, 65, LV_SYMBOL_UP, min_up_cb);
+    
+    lbl_alarm_min = lv_label_create(alarm_win);
+    char mbuf[4]; snprintf(mbuf, sizeof(mbuf), "%02d", alarm_min);
+    lv_label_set_text(lbl_alarm_min, mbuf);
+    lv_obj_set_style_text_color(lbl_alarm_min, G, 0);
+    lv_obj_set_style_text_font(lbl_alarm_min, &lv_font_montserrat_28, 0);
+    lv_obj_set_size(lbl_alarm_min, 60, 40);
+    lv_obj_set_style_text_align(lbl_alarm_min, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(lbl_alarm_min, 180, 115);
+    
+    make_adjust_btn(alarm_win, 180, 165, LV_SYMBOL_DOWN, min_down_cb);
+    
+    btn_alarm_toggle = lv_button_create(alarm_win);
+    lv_obj_set_size(btn_alarm_toggle, 220, 45);
+    lv_obj_set_pos(btn_alarm_toggle, 40, 225);
+    lv_obj_set_style_radius(btn_alarm_toggle, 0, 0);
+    lv_obj_set_style_border_width(btn_alarm_toggle, 1, 0);
+    lv_obj_add_event_cb(btn_alarm_toggle, alarm_toggle_cb, LV_EVENT_CLICKED, nullptr);
+    
+    lbl_alarm_toggle = lv_label_create(btn_alarm_toggle);
+    lv_obj_center(lbl_alarm_toggle);
+    lv_obj_set_style_text_font(lbl_alarm_toggle, &lv_font_montserrat_16, 0);
+    update_toggle_button_style();
+    
+    lv_obj_t *btn_close = lv_button_create(alarm_win);
+    lv_obj_set_size(btn_close, 220, 40);
+    lv_obj_set_pos(btn_close, 40, 280);
+    lv_obj_set_style_bg_color(btn_close, BG, 0);
+    lv_obj_set_style_border_color(btn_close, G, 0);
+    lv_obj_set_style_border_width(btn_close, 1, 0);
+    lv_obj_set_style_radius(btn_close, 0, 0);
+    lv_obj_add_event_cb(btn_close, alarm_close_cb, LV_EVENT_CLICKED, nullptr);
+    
+    lv_obj_t *lbl_close = lv_label_create(btn_close);
+    lv_label_set_text(lbl_close, "SAVE & CLOSE");
+    lv_obj_set_style_text_color(lbl_close, G, 0);
+    lv_obj_set_style_text_font(lbl_close, &lv_font_montserrat_16, 0);
+    lv_obj_center(lbl_close);
+}
 
 static lv_obj_t *lbl_time = nullptr;
 static lv_obj_t *lbl_seconds = nullptr;
@@ -106,6 +438,16 @@ static void create_pipboy(void) {
     lv_obj_set_style_text_font(lbl_battery, &lv_font_montserrat_14, 0);
     lv_obj_set_pos(lbl_battery, X0 + 155, Y0+44);
 
+    lbl_alarm_bell = lv_label_create(scr);
+    lv_label_set_text(lbl_alarm_bell, "ALARM");
+    lv_obj_set_style_text_font(lbl_alarm_bell, &lv_font_montserrat_14, 0);
+    lv_obj_set_size(lbl_alarm_bell, 65, 25);
+    lv_obj_set_style_text_align(lbl_alarm_bell, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(lbl_alarm_bell, XM - 110, Y0 + 44);
+    lv_obj_add_flag(lbl_alarm_bell, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_text_color(lbl_alarm_bell, alarm_enabled ? G : D, 0);
+    lv_obj_add_event_cb(lbl_alarm_bell, alarm_bell_click_cb, LV_EVENT_CLICKED, nullptr);
+
     lv_obj_t *tc = lv_obj_create(scr); lv_obj_remove_style_all(tc);
     lv_obj_set_size(tc, 360, 160); lv_obj_align(tc, LV_ALIGN_CENTER, 0, -20);
     lv_obj_set_style_bg_opa(tc, LV_OPA_TRANSP, 0);
@@ -170,6 +512,16 @@ static void create_minimal(void) {
     lv_obj_set_style_text_font(m_bat, &lv_font_montserrat_18, 0);
     lv_obj_align(m_bat, LV_ALIGN_TOP_RIGHT, -SAFE_RIGHT-5, Y0);
 
+    lbl_alarm_bell = lv_label_create(scr);
+    lv_label_set_text(lbl_alarm_bell, "ALARM");
+    lv_obj_set_style_text_font(lbl_alarm_bell, &lv_font_montserrat_14, 0);
+    lv_obj_set_size(lbl_alarm_bell, 65, 25);
+    lv_obj_set_style_text_align(lbl_alarm_bell, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(lbl_alarm_bell, X0 + 5, Y0 + 12);
+    lv_obj_add_flag(lbl_alarm_bell, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_text_color(lbl_alarm_bell, alarm_enabled ? G : D, 0);
+    lv_obj_add_event_cb(lbl_alarm_bell, alarm_bell_click_cb, LV_EVENT_CLICKED, nullptr);
+
     m_sync = lv_label_create(scr);
     lv_label_set_text(m_sync, "");
     lv_obj_set_style_text_color(m_sync, D, 0);
@@ -233,6 +585,16 @@ static void create_analog(void) {
     draw_hand(&line_hour, hour_pts, 0, 100, 5, G);
     draw_hand(&line_min, min_pts, 0, 140, 3, G);
     draw_hand(&line_sec, sec_pts, 0, 155, 1, D);
+
+    lbl_alarm_bell = lv_label_create(scr);
+    lv_label_set_text(lbl_alarm_bell, "ALARM");
+    lv_obj_set_style_text_font(lbl_alarm_bell, &lv_font_montserrat_14, 0);
+    lv_obj_set_size(lbl_alarm_bell, 65, 25);
+    lv_obj_set_style_text_align(lbl_alarm_bell, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(lbl_alarm_bell, XM - 110, Y0 + 44);
+    lv_obj_add_flag(lbl_alarm_bell, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_text_color(lbl_alarm_bell, alarm_enabled ? G : D, 0);
+    lv_obj_add_event_cb(lbl_alarm_bell, alarm_bell_click_cb, LV_EVENT_CLICKED, nullptr);
 }
 
 static void rebuild_face(void) {
@@ -243,6 +605,7 @@ static void rebuild_face(void) {
     m_time = m_date = m_bat = m_sync = nullptr;
     a_time_lbl = a_date_lbl = nullptr;
     line_hour = line_min = line_sec = nullptr;
+    lbl_alarm_bell = nullptr;
     for (int i = 0; i < 7; i++) { day_labels[i] = nullptr; day_boxes[i] = nullptr; }
 
     scr = lv_obj_create(parent_scr);
@@ -293,6 +656,15 @@ void watchface_set_time(uint8_t hour, uint8_t min) {
     if (a_time_lbl) {
         char tb[12]; snprintf(tb, sizeof(tb), "%02d:%02d:%02d", hour, min, c_sec);
         lv_label_set_text(a_time_lbl, tb);
+    }
+
+    if (alarm_enabled && hour == alarm_hour && min == alarm_min) {
+        if (!alarm_triggered && !alarm_active_ringing) {
+            alarm_triggered = true;
+            trigger_alarm();
+        }
+    } else {
+        alarm_triggered = false;
     }
 }
 
@@ -409,20 +781,22 @@ void watchface_set_temperature(int16_t temp_c) { (void)temp_c; }
 
 void watchface_set_sync_status(bool wifi, bool ntp_ok, bool gps_fix) {
     c_ntp = ntp_ok; c_wifi = wifi; c_gps = gps_fix;
-    char b[160];
+    char b[192];
     bool ws = web_server_is_active();
     bool wdg = ble_uart_is_active();
     bool mc = lora_svc_is_running();
     bool bg = recon_is_bitgotchi_active();
+    bool rec = audio_rec_is_recording();
 
     snprintf(b, sizeof(b),
-        "%s " LV_SYMBOL_WIFI " %s#  %s " LV_SYMBOL_GPS " %s#  %s " LV_SYMBOL_KEYBOARD " %s#  %s " LV_SYMBOL_BLUETOOTH " %s#  %s " LV_SYMBOL_BULLET " %s#  %s " LV_SYMBOL_EYE_OPEN " %s#",
+        "%s " LV_SYMBOL_WIFI " %s#  %s " LV_SYMBOL_GPS " %s#  %s " LV_SYMBOL_KEYBOARD " %s#  %s " LV_SYMBOL_BLUETOOTH " %s#  %s " LV_SYMBOL_BULLET " %s#  %s " LV_SYMBOL_EYE_OPEN " %s#  %s " LV_SYMBOL_BULLET " REC#",
         wifi ? "#00e5ff" : "#007280", wifi ? "ON" : "--",
         gps_fix ? "#00e5ff" : "#007280", gps_fix ? "FIX" : "--",
         ws ? "#00e5ff" : "#007280", ws ? "ON" : "--",
         wdg ? "#00e5ff" : "#007280", wdg ? "ON" : "--",
         mc ? "#00e5ff" : "#007280", mc ? "ON" : "--",
-        bg ? "#00e5ff" : "#007280", bg ? "ON" : "--");
+        bg ? "#00e5ff" : "#007280", bg ? "ON" : "--",
+        rec ? "#aa0000" : "#007280");
 
     if (lbl_sync) {
         lv_label_set_text(lbl_sync, b);

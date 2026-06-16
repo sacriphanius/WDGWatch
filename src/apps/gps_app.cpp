@@ -93,28 +93,14 @@ static String get_next_trip_filename() {
 
 static void toggle_gps_cb(lv_event_t *e) {
     (void)e; haptic_click();
-    gps_enabled = !gps_enabled;
-    instance.powerControl(POWER_GPS, gps_enabled);
-
-    update_btn_style(btn_gps_toggle, gps_enabled);
-
-    if (!gps_enabled && wardriving_active) {
-        wardriving_active = false;
-        lv_obj_t *w_lbl = lv_obj_get_child(btn_wardriving, 0);
-        if (w_lbl) {
-            lv_label_set_text(w_lbl, "WARDRIVING");
-        }
-        update_btn_style(btn_wardriving, false);
-    }
+    gps_app_set_enabled(!gps_enabled);
 }
 
 static void toggle_wardriving_cb(lv_event_t *e) {
     (void)e; haptic_click();
 
     if (!wardriving_active && !gps_enabled) {
-        gps_enabled = true;
-        instance.powerControl(POWER_GPS, true);
-        update_btn_style(btn_gps_toggle, true);
+        gps_app_set_enabled(true);
     }
 
     wardriving_active = !wardriving_active;
@@ -256,6 +242,18 @@ void gps_app_update(void) {
             f.close();
         }
     }
+
+    static uint32_t last_print = 0;
+    if (millis() - last_print > 5000) {
+        last_print = millis();
+        Serial.printf("[GPS] Sats: %d, Lat: %.6f, Lon: %.6f, Alt: %.1fm, Fix: %s, Chars: %u\n",
+                      instance.gps.satellites.value(),
+                      instance.gps.location.lat(),
+                      instance.gps.location.lng(),
+                      instance.gps.altitude.meters(),
+                      instance.gps.location.isValid() ? "3D FIX" : "NO FIX",
+                      instance.gps.charsProcessed());
+    }
 }
 
 void gps_app_destroy(void) {
@@ -274,6 +272,12 @@ void gps_app_set_enabled(bool enabled) {
     if (gps_enabled == enabled) return;
     gps_enabled = enabled;
     instance.powerControl(POWER_GPS, gps_enabled);
+    if (gps_enabled) {
+        instance.gps.init(&Serial1);
+        Serial.println("[GPS] Powered ON & Initialized");
+    } else {
+        Serial.println("[GPS] Powered OFF");
+    }
     if (!gps_enabled && wardriving_active) {
         wardriving_active = false;
         if (btn_wardriving) {

@@ -146,7 +146,13 @@ void loop() {
     ble_uart_loop();
     api_loop();
 
-    instance.gps.loop();
+    if (gps_app_is_enabled()) {
+        instance.gps.loop();
+    }
+
+    if (watchface_alarm_is_ringing()) {
+        power_hal_reset_activity();
+    }
 
     web_server_loop();
 
@@ -164,7 +170,7 @@ void loop() {
     if (!boot_btn && boot_btn_last) {
         if (power_hal_screen_is_off()) {
             power_hal_screen_toggle();
-        } else {
+        } else if (!watchface_alarm_is_ringing()) {
             app_manager_back();
         }
         power_hal_reset_activity();

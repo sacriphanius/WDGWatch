@@ -49,6 +49,45 @@ button:active,.btn:active{background:#007280}
 #wifi-results{max-height:200px;overflow-y:auto}
 .modal{display:none;position:fixed;z-index:100;left:0;top:0;width:100%;height:100%;background-color:rgba(0,0,0,0.85);overflow:auto}
 .modal-content{background:#000;margin:15% auto;padding:15px;border:1px solid #00e5ff;width:85%;max-width:380px}
+.sd-item {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:8px;
+  border-bottom:1px solid #003840;
+}
+.sd-item:last-child {
+  border:none;
+}
+.sd-item .name {
+  flex:1;
+  cursor:pointer;
+  color:#00e5ff;
+}
+.sd-item .name.dir {
+  color:#007280;
+  font-weight:bold;
+}
+.sd-item .actions {
+  display:flex;
+  gap:8px;
+}
+.sd-btn {
+  background:#000;
+  color:#00e5ff;
+  border:1px solid #007280;
+  padding:4px 8px;
+  cursor:pointer;
+  font-family:inherit;
+  font-size:12px;
+}
+.sd-btn:hover {
+  border-color:#00e5ff;
+}
+.sd-btn-danger {
+  border-color:#f33;
+  color:#f33;
+}
 </style>
 </head>
 <body>
@@ -61,6 +100,8 @@ button:active,.btn:active{background:#007280}
 <button class="tab" onclick="showTab('wifi')">WiFi</button>
 <button class="tab" onclick="showTab('recon')">RECON</button>
 <button class="tab" onclick="showTab('hid')">HID</button>
+<button class="tab" onclick="showTab('rf')">RF</button>
+<button class="tab" onclick="showTab('sd')">SD FILES</button>
 <button class="tab" onclick="showTab('settings')">SET</button>
 </div>
 
@@ -192,6 +233,38 @@ button:active,.btn:active{background:#007280}
 <button onclick="api('/api/reboot','POST')" class="btn-danger">REBOOT WATCH</button>
 </div>
 
+<!-- RF -->
+<div id="rf" class="panel">
+<div class="row"><span class="lbl">RF STATUS</span><span class="val" id="rf-status">IDLE</span></div>
+<div class="row"><span class="lbl">JAMMER FREQ</span><span class="val" id="rf-freq">--</span></div>
+<h3 style="color:#007280;margin:8px 0 4px">JAMMER CONTROL</h3>
+<div class="grid2">
+<button onclick="startJammer(433920000)">JAM 433.92 MHz</button>
+<button onclick="startJammer(315000000)">JAM 315.00 MHz</button>
+</div>
+<div style="margin-top:6px">
+<input id="rf-custom-freq" placeholder="Custom Freq in Hz (e.g. 433920000)" type="number">
+<button onclick="startJammer(document.getElementById('rf-custom-freq').value)">JAM CUSTOM</button>
+</div>
+<button onclick="stopJammer()" class="btn-warn" style="margin-top:6px">STOP JAMMER</button>
+<h3 style="color:#007280;margin:8px 0 4px">TESLA COMMAND</h3>
+<button onclick="sendTesla()" class="btn-danger">SEND TESLA BURST (433.92 MHz)</button>
+</div>
+
+<!-- SD FILES -->
+<div id="sd" class="panel">
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border-bottom:1px solid #007280;padding-bottom:6px">
+  <div style="font-weight:bold;color:#00e5ff">SD CARD BROWSER</div>
+  <div style="display:flex;gap:6px">
+    <button onclick="document.getElementById('sd-file-input').click()" style="width:auto;padding:4px 8px;font-size:12px;margin:0">📤 UPLOAD</button>
+    <button onclick="createFolder()" style="width:auto;padding:4px 8px;font-size:12px;margin:0">➕ NEW FOLDER</button>
+  </div>
+</div>
+<input type="file" id="sd-file-input" style="display:none" onchange="uploadFile()">
+<div id="sd-path" style="color:#007280;margin-bottom:8px;font-weight:bold;word-break:break-all">/</div>
+<div id="sd-file-list" style="border:1px solid #007280;max-height:300px;overflow-y:auto;background:#000"></div>
+</div>
+
 <div id="log"></div>
 
 <!-- Modals -->
@@ -282,6 +355,7 @@ function showTab(t){
  document.getElementById(t).classList.add('active');
  document.querySelectorAll('.tab').forEach(b=>{if(b.textContent.toLowerCase().includes(t.substring(0,3)))b.classList.add('active')});
  if(t==='lora') loadLoraHistory();
+ if(t==='sd') loadSdDir(currentSdPath);
 }
 let loraHistLoaded=false;
 async function loadLoraHistory(){
@@ -448,6 +522,160 @@ function handleTermEnter(e){
   }
  }
 }
+
+async function startJammer(freq) {
+  if(!freq) return;
+  await api('/api/rf/jammer/start', 'POST', {freq: freq});
+  updateRFStatus();
+}
+async function stopJammer() {
+  await api('/api/rf/jammer/stop', 'POST');
+  updateRFStatus();
+}
+async function sendTesla() {
+  await api('/api/rf/tesla', 'POST');
+}
+async function updateRFStatus() {
+  try {
+    let r = await fetch('/api/rf/status');
+    let d = await r.json();
+    el('rf-status', d.jammer ? 'JAMMING' : (d.tesla ? 'SENDING TESLA' : 'IDLE'));
+    el('rf-freq', (d.freq / 1000000).toFixed(2) + ' MHz');
+  } catch(e) {}
+}
+setInterval(()=>{
+  let p = document.getElementById('rf');
+  if(p && p.classList.contains('active')) updateRFStatus();
+}, 2000);
+
+let currentSdPath = '/';
+async function loadSdDir(path) {
+  currentSdPath = path;
+  el('sd-path', 'PATH: ' + path);
+  let list = document.getElementById('sd-file-list');
+  list.innerHTML = '<div style="color:#007280;padding:10px;text-align:center;">Loading...</div>';
+  try {
+    let r = await fetch('/api/sd/list?path=' + encodeURIComponent(path));
+    let d = await r.json();
+    list.innerHTML = '';
+    if (path !== '/') {
+      let item = document.createElement('div');
+      item.className = 'sd-item';
+      item.innerHTML = `
+        <span class="name dir" onclick="goUp('${d.parent}')">📁 ... (Go Back)</span>
+        <div class="actions"></div>
+      `;
+      list.appendChild(item);
+    }
+    if (d.items && d.items.length > 0) {
+      d.items.forEach(item => {
+        let row = document.createElement('div');
+        row.className = 'sd-item';
+        let icon = item.isDir ? '📁' : '📄';
+        let sizeInfo = item.isDir ? '' : ` (${formatBytes(item.size)})`;
+        let displayName = `${icon} ${item.name}${sizeInfo}`;
+        
+        let nameEl = document.createElement('span');
+        nameEl.className = 'name' + (item.isDir ? ' dir' : '');
+        nameEl.textContent = displayName;
+        if (item.isDir) {
+          nameEl.onclick = () => {
+            let nextPath = currentSdPath === '/' ? '/' + item.name : currentSdPath + '/' + item.name;
+            nextPath = nextPath.replace(/\/+/g, '/');
+            loadSdDir(nextPath);
+          };
+        }
+        row.appendChild(nameEl);
+        
+        let actions = document.createElement('div');
+        actions.className = 'actions';
+        
+        let btnRename = document.createElement('button');
+        btnRename.className = 'sd-btn';
+        btnRename.textContent = '✏️';
+        btnRename.title = 'Rename';
+        btnRename.onclick = () => renameItem(item.name);
+        actions.appendChild(btnRename);
+        
+        if (!item.isDir) {
+          let btnDl = document.createElement('button');
+          btnDl.className = 'sd-btn';
+          btnDl.textContent = '📥';
+          btnDl.title = 'Download';
+          btnDl.onclick = () => downloadItem(item.name);
+          actions.appendChild(btnDl);
+        }
+        
+        let btnDel = document.createElement('button');
+        btnDel.className = 'sd-btn sd-btn-danger';
+        btnDel.textContent = '🗑️';
+        btnDel.title = 'Delete';
+        btnDel.onclick = () => deleteItem(item.name, item.isDir);
+        actions.appendChild(btnDel);
+        
+        row.appendChild(actions);
+        list.appendChild(row);
+      });
+    } else {
+      list.innerHTML += '<div style="color:#007280;padding:10px;text-align:center;">Empty directory</div>';
+    }
+  } catch(e) {
+    list.innerHTML = '<div style="color:#f33;padding:10px;text-align:center;">Error loading directory</div>';
+  }
+}
+function goUp(parentPath) { loadSdDir(parentPath); }
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  let k = 1024, sizes = ['B', 'KB', 'MB', 'GB'];
+  let i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+}
+function downloadItem(filename) {
+  let fullPath = currentSdPath === '/' ? '/' + filename : currentSdPath + '/' + filename;
+  window.open('/api/sd/download?path=' + encodeURIComponent(fullPath), '_blank');
+}
+async function deleteItem(filename, isDir) {
+  let fullPath = currentSdPath === '/' ? '/' + filename : currentSdPath + '/' + filename;
+  if (confirm(`Are you sure you want to delete ${isDir ? 'folder' : 'file'} "${filename}"?`)) {
+    let r = await api('/api/sd/delete', 'POST', {path: fullPath});
+    if (r && r.ok) { loadSdDir(currentSdPath); }
+  }
+}
+async function renameItem(oldName) {
+  let newName = prompt(`Rename "${oldName}" to:`, oldName);
+  if (!newName) return;
+  newName = newName.trim();
+  if (newName === '' || newName === oldName) return;
+  let oldPath = currentSdPath === '/' ? '/' + oldName : currentSdPath + '/' + oldName;
+  let newPath = currentSdPath === '/' ? '/' + newName : currentSdPath + '/' + newName;
+  let r = await api('/api/sd/rename', 'POST', {path: oldPath, newPath: newPath});
+  if (r && r.ok) { loadSdDir(currentSdPath); }
+}
+async function createFolder() {
+  let name = prompt("Enter new folder name:");
+  if (!name) return;
+  name = name.trim();
+  if (name === '') return;
+  let r = await api('/api/sd/mkdir', 'POST', {path: currentSdPath, name: name});
+  if (r && r.ok) { loadSdDir(currentSdPath); }
+}
+async function uploadFile() {
+  let fileInput = document.getElementById('sd-file-input');
+  if (fileInput.files.length === 0) return;
+  let file = fileInput.files[0];
+  let formData = new FormData();
+  formData.append('file', file);
+  try {
+    let r = await fetch('/api/sd/upload?path=' + encodeURIComponent(currentSdPath), {
+      method: 'POST',
+      body: formData
+    });
+    let d = await r.json();
+    if (d && d.ok) { loadSdDir(currentSdPath); }
+  } catch(e) {}
+  fileInput.value = '';
+}
+
 wsConnect();
 setInterval(()=>{if(ws&&ws.readyState===1)ws.send('ping')},5000);
 </script>

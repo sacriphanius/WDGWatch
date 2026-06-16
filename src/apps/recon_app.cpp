@@ -7,6 +7,7 @@
 #include "../hal/haptic.h"
 #include "../hal/recon_service.h"
 #include <SD.h>
+#include "../hal/audio_record.h"
 
 static lv_obj_t *scr = nullptr;
 static lv_obj_t *lbl_status = nullptr;
@@ -62,6 +63,7 @@ static void stop_cb(lv_event_t *e) {
     (void)e; haptic_click();
     arp_scan_was_running = false;
     recon_request_stop();
+    audio_rec_stop();
 }
 
 static void ip_select_cb(lv_event_t *e) {
@@ -78,6 +80,41 @@ static void close_modal_cb(lv_event_t *e) {
     lv_obj_t* btn = (lv_obj_t*)lv_event_get_target(e);
     lv_obj_t* modal = lv_obj_get_parent(lv_obj_get_parent(btn));
     lv_obj_delete(modal);
+}
+
+static void rec_btn_cb(lv_event_t *e) {
+    (void)e; haptic_click();
+    if (audio_rec_is_recording()) {
+        audio_rec_stop();
+        if (lbl_status) {
+            lv_label_set_text(lbl_status, "REC STOPPED");
+            lv_obj_set_style_text_color(lbl_status, G, 0);
+        }
+    } else {
+        int idx = 1;
+        char path[64];
+        while (idx < 1000) {
+            snprintf(path, sizeof(path), "/rec/recrd_%d.wav", idx);
+            if (!SD.exists(path)) {
+                break;
+            }
+            idx++;
+        }
+        
+        if (audio_rec_start(path)) {
+            if (lbl_status) {
+                char status_buf[64];
+                snprintf(status_buf, sizeof(status_buf), "REC: recrd_%d.wav", idx);
+                lv_label_set_text(lbl_status, status_buf);
+                lv_obj_set_style_text_color(lbl_status, lv_color_hex(0xFF0000), 0);
+            }
+        } else {
+            if (lbl_status) {
+                lv_label_set_text(lbl_status, "REC ERROR (NO SD?)");
+                lv_obj_set_style_text_color(lbl_status, lv_color_hex(0xFF0000), 0);
+            }
+        }
+    }
 }
 
 static void arp_btn_cb(lv_event_t *e) {
@@ -101,7 +138,7 @@ static void arp_btn_cb(lv_event_t *e) {
     lv_obj_set_style_bg_color(list, BG, 0);
     lv_obj_set_style_border_width(list, 0, 0);
 
-    // Add close button at the top
+    
     lv_obj_t* close_btn = lv_list_add_button(list, nullptr, "[ BACK / CLOSE ]");
     lv_obj_set_style_bg_color(close_btn, BG, 0);
     lv_obj_set_style_text_color(lv_obj_get_child(close_btn, 0), lv_color_hex(0xFF3300), 0);
@@ -466,6 +503,11 @@ void recon_app_create(lv_obj_t *parent) {
 
     y += bh + 7;
     make_btn(scr, x, y, bw*2+7, bh, "ARP", arp_btn_cb);
+    lv_obj_t* rec_btn = make_btn(scr, x+2*(bw+7), y, bw, bh, "#FF0000 " LV_SYMBOL_BULLET "# REC", rec_btn_cb);
+    lv_obj_t* rec_lbl = lv_obj_get_child(rec_btn, 0);
+    if (rec_lbl) {
+        lv_label_set_recolor(rec_lbl, true);
+    }
 
     y += bh + 15;
     lbl_results = lv_label_create(scr);
@@ -481,7 +523,14 @@ void recon_app_create(lv_obj_t *parent) {
 void recon_app_update(void) {
     if (!scr || !lbl_status || !lbl_results) return;
 
-    if (recon_is_scanning() || recon_is_arp_scanning()) {
+    if (audio_rec_is_recording()) {
+        const char* fname = audio_rec_get_filename();
+        if (strncmp(fname, "/recordings/", 12) == 0) fname += 12;
+        char b[64];
+        snprintf(b, sizeof(b), "REC: %s", fname);
+        lv_label_set_text(lbl_status, b);
+        lv_obj_set_style_text_color(lbl_status, lv_color_hex(0xFF0000), 0);
+    } else if (recon_is_scanning() || recon_is_arp_scanning()) {
         const char* arp_msg = recon_is_arp_waiting_wifi() ? "ARP: Connecting..." : "ARP SCANNING...";
         lv_label_set_text(lbl_status, recon_is_arp_scanning() ? arp_msg : "SCANNING...");
         lv_obj_set_style_text_color(lbl_status, G, 0);
