@@ -1,39 +1,64 @@
 <!DOCTYPE html>
-<html lang="tr">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SCR Terminal Web Flasher</title>
     <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
     <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
 </head>
 <body>
+    <!-- Retro CRT Scanline overlays -->
+    <div class="scanline"></div>
+    <div class="scanbar"></div>
     <div class="glow-bg"></div>
+
     <main class="container">
         <header class="header">
-            <div class="logo">SCR Terminal</div>
-            <span class="badge" id="version-badge">Loading...</span>
+            <div class="logo">SCR TERMINAL</div>
+            <span class="badge" id="version-badge">LOADING...</span>
         </header>
 
         <section class="card">
-            <h1>Firmware Web Installer</h1>
-            <p class="subtitle">WDGWatch donanımınızı doğrudan tarayıcınızdan güncelleyin veya sıfırlayın.</p>
+            <!-- Watch Dogs Boot Screen ASCII Logo -->
+            <pre class="ascii-logo">
+  ____  ____ ____  
+ / ___|/ ___|  _ \ 
+ \___ \\ |   | |_) |
+  ___) || |___| _ < 
+ |____/ \____|_| \_\</pre>
+
+            <h1>FIRMWARE WEB INSTALLER</h1>
+            <p class="subtitle">Flash or update your WDGWatch firmware directly from your web browser.</p>
 
             <div class="info-box">
-                <h3>⚠️ Başlamadan Önce:</h3>
+                <h3>⚠️ BEFORE YOU BEGIN:</h3>
                 <ul>
-                    <li>Cihazınızı USB-C kablosuyla bilgisayara bağlayın.</li>
-                    <li>Google Chrome, MS Edge veya Opera gibi <strong>Web Serial API</strong> destekleyen bir tarayıcı kullanın.</li>
-                    <li>Başka bir programın (PlatformIO, Arduino IDE veya Seri Monitör) portu meşgul etmediğinden emin olun.</li>
+                    <li>Connect your device using a high-quality USB-C cable.</li>
+                    <li>Use a browser that supports Web Serial API (Chrome, Edge, or Opera).</li>
+                    <li>Ensure no other program (PlatformIO, Arduino IDE, or Serial Monitor) is holding the port.</li>
                 </ul>
             </div>
 
             <div class="button-wrapper">
                 <esp-web-install-button manifest="manifest.json">
-                    <button slot="activate" class="btn-primary">Cihaza Bağlan ve Yükle</button>
-                    <span slot="unsupported" class="unsupported-msg">Tarayıcınız Web Serial API desteklemiyor. Lütfen Chrome veya Edge kullanın.</span>
+                    <button slot="activate" class="btn-primary">CONNECT & FLASH</button>
+                    <span slot="unsupported" class="unsupported-msg">Your browser does not support Web Serial API. Please use Google Chrome or MS Edge.</span>
                 </esp-web-install-button>
+            </div>
+
+            <!-- Dynamic console output box -->
+            <div class="console-box">
+                <div class="console-header">
+                    <span class="console-dot"></span>
+                    <span class="console-title">DEDSEC_CONSOLE // SYSTEM_LOG</span>
+                </div>
+                <div class="console-log">
+                    <div class="console-line">> INITIALIZING DEDSEC WEB INJECTOR...</div>
+                    <div class="console-line">> FIRMWARE: STANDBY</div>
+                    <div class="console-line">> WEB SERIAL INTERFACE: ACTIVE</div>
+                </div>
             </div>
         </section>
 
@@ -43,14 +68,57 @@
     </main>
 
     <script>
+        // Dynamically fetch and display the manifest version
+        const versionBadge = document.getElementById('version-badge');
         fetch('manifest.json')
             .then(res => res.json())
             .then(data => {
-                document.getElementById('version-badge').innerText = data.version + ' Stable';
+                versionBadge.innerText = data.version.toUpperCase() + ' STABLE';
             })
             .catch(() => {
-                document.getElementById('version-badge').innerText = 'v2.4.1 Stable';
+                versionBadge.innerText = 'V2.4.1 STABLE';
             });
+
+        // Listen to ESP Web Tools installation events and print to console log
+        const button = document.querySelector('esp-web-install-button');
+        const consoleLog = document.querySelector('.console-log');
+
+        function addLog(text, isError = false) {
+            const line = document.createElement('div');
+            line.className = 'console-line' + (isError ? ' error' : '');
+            line.innerText = `> ${text.toUpperCase()}`;
+            consoleLog.appendChild(line);
+            consoleLog.scrollTop = consoleLog.scrollHeight;
+        }
+
+        if (button) {
+            button.addEventListener('state-changed', (ev) => {
+                const state = ev.detail.state;
+                addLog(`SYS_STATE_CHANGED: ${state}`);
+                
+                switch(state) {
+                    case 'initializing':
+                        addLog('Connecting to device bootloader...');
+                        break;
+                    case 'connecting':
+                        addLog('Connection established. Syncing hardware...');
+                        break;
+                    case 'erasing':
+                        addLog('Erasing flash sectors on ESP32-S3...');
+                        break;
+                    case 'writing':
+                        addLog('Flashing firmware binaries... DO NOT DISCONNECT OR CLOSE THE PAGE!');
+                        break;
+                    case 'finished':
+                        addLog('Firmware written successfully! Rebooting watch...');
+                        addLog('Device ready. Hack the planet.');
+                        break;
+                    case 'error':
+                        addLog('ERROR: Installation failed. Check USB connection or port usage.', true);
+                        break;
+                }
+            });
+        }
     </script>
 </body>
 </html>
