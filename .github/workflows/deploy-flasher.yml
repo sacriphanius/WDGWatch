@@ -41,6 +41,7 @@ jobs:
 
       - name: Upload Binaries to Release Assets
         uses: softprops/action-gh-release@v2
+        if: github.event_name == 'release'
         with:
           files: |
             dist/firmware/bootloader.bin
