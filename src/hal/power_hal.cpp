@@ -8,6 +8,7 @@
 #include "rf_service.h"
 #include "nfc_service.h"
 #include "hid_service.h"
+#include "../ui/watchface.h"
 
 static uint32_t last_activity_ms = 0;
 static uint32_t sleep_timeout_ms = SLEEP_TIMEOUT_MS;
@@ -91,12 +92,26 @@ void power_hal_light_sleep(void) {
 
     WiFi.mode(WIFI_OFF);
 
-    extern bool watchface_alarm_is_enabled(void);
-    if (watchface_alarm_is_enabled()) {
-        esp_sleep_enable_timer_wakeup(10ULL * 1000000ULL); 
-    }
+    while (true) {
+        if (watchface_alarm_is_enabled()) {
+            esp_sleep_enable_timer_wakeup(10ULL * 1000000ULL); 
+        }
 
-    instance.lightSleep((WakeupSource_t)(WAKEUP_SRC_POWER_KEY | WAKEUP_SRC_TOUCH_PANEL | WAKEUP_SRC_BOOT_BUTTON));
+        instance.lightSleep((WakeupSource_t)(WAKEUP_SRC_POWER_KEY | WAKEUP_SRC_TOUCH_PANEL | WAKEUP_SRC_BOOT_BUTTON));
+
+        esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+        if (cause == ESP_SLEEP_WAKEUP_TIMER) {
+            RTC_DateTime dt = instance.rtc.getDateTime();
+            watchface_set_time(dt.getHour(), dt.getMinute());
+            
+            if (watchface_alarm_is_ringing()) {
+                break;
+            }
+            continue;
+        } else {
+            break;
+        }
+    }
 
     last_wakeup_ms = millis();
     screen_off = false;

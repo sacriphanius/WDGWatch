@@ -32,6 +32,8 @@ void audio_rec_task(void *pvParameters) {
         audio_rec_task_handle = nullptr;
         vTaskDelete(NULL);
         return;
+    }
+
     wav_header_t header;
     memcpy(header.chunk_id, "RIFF", 4);
     header.chunk_size = 36; 
@@ -78,6 +80,8 @@ void audio_rec_task(void *pvParameters) {
             Serial.printf("[REC] Recording... Bytes written so far: %u\n", audio_rec_bytes_written);
         }
         vTaskDelay(pdMS_TO_TICKS(10));
+    }
+
     if (f.seek(0)) {
         header.chunk_size = audio_rec_bytes_written + 36;
         header.subchunk2_size = audio_rec_bytes_written;

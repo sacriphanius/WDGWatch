@@ -128,6 +128,10 @@ void loop() {
 
     instance.loop();
 
+    if (digitalRead(SENSOR_INT) == HIGH) {
+        instance.sensor.update();
+    }
+
     lv_timer_handler();
 
     uint32_t now = millis();
