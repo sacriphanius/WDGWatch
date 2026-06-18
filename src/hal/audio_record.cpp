@@ -1,7 +1,6 @@
 #include "audio_record.h"
 #include <SD.h>
 #include <LilyGoLib.h>
-#include <driver/i2s.h>
 
 volatile bool audio_rec_active = false;
 static TaskHandle_t audio_rec_task_handle = nullptr;
@@ -68,11 +67,10 @@ void audio_rec_task(void *pvParameters) {
     uint32_t log_ms = millis();
     while (audio_rec_active) {
         size_t bytes_read = 0;
-        if (instance.mic.read(buf, chunk_size, &bytes_read, pdMS_TO_TICKS(100))) {
-            if (bytes_read > 0) {
-                f.write(buf, bytes_read);
-                audio_rec_bytes_written += bytes_read;
-            }
+        bytes_read = instance.mic.readBytes(reinterpret_cast<char*>(buf), chunk_size);
+        if (bytes_read > 0) {
+            f.write(buf, bytes_read);
+            audio_rec_bytes_written += bytes_read;
         }
         
         if (millis() - log_ms > 2000) {

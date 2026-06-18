@@ -101,7 +101,7 @@ static void play_alarm_sound(int duration_ms, int freq_hz) {
             buf[i * 2 + 1] = val;
             sample_idx++;
         }
-        instance.player.write((void*)buf, to_write * 2 * sizeof(int16_t));
+        instance.player.write(reinterpret_cast<const uint8_t*>(buf), to_write * 2 * sizeof(int16_t));
         samples_written += to_write;
     }
     free(buf);

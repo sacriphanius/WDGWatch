@@ -1,5 +1,6 @@
 #include "lora_service.h"
 #include <RadioLib.h>
+#include <esp_mac.h>
 #include <LilyGoLib.h>
 #include <LilyGo_LoRa_Pager.h>
 #include <mbedtls/aes.h>
