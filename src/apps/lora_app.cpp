@@ -19,10 +19,16 @@ static lv_obj_t *btn_send = nullptr;
 #define D  lv_color_hex(0x007280)
 #define BG lv_color_hex(0x000000)
 
-static void toggle_cb(lv_event_t *e) {
+static void toggle_meshcore_cb(lv_event_t *e) {
     (void)e; haptic_click();
-    if (lora_svc_is_running()) lora_svc_stop();
-    else lora_svc_start();
+    if (lora_svc_is_running() && lora_svc_get_mode() == MODE_MESHCORE) lora_svc_stop();
+    else lora_svc_start(MODE_MESHCORE);
+}
+
+static void toggle_meshtastic_cb(lv_event_t *e) {
+    (void)e; haptic_click();
+    if (lora_svc_is_running() && lora_svc_get_mode() == MODE_MESHTASTIC) lora_svc_stop();
+    else lora_svc_start(MODE_MESHTASTIC);
 }
 
 static void style_keyboard_pipboy(lv_obj_t *kb, lv_obj_t *ta) {
@@ -95,7 +101,11 @@ static void show_message_keyboard(void) {
     lv_obj_clear_flag(lora_kbd_container, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *title = lv_label_create(lora_kbd_container);
-    lv_label_set_text(title, "Send MeshCore Msg:");
+    if (lora_svc_get_mode() == MODE_MESHTASTIC) {
+        lv_label_set_text(title, "Send Meshtastic:");
+    } else {
+        lv_label_set_text(title, "Send MeshCore Msg:");
+    }
     lv_obj_set_style_text_color(title, G, 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
@@ -132,7 +142,7 @@ void lora_app_create(lv_obj_t *parent) {
     int x = SAFE_LEFT + 10, y = SAFE_TOP;
 
     lv_obj_t *title = lv_label_create(scr);
-    lv_label_set_text(title, "[ MESHCORE ]");
+    lv_label_set_text(title, "[ RADIO CHAT ]");
     lv_obj_set_style_text_color(title, G, 0);
     lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
     lv_obj_align(title, LV_ALIGN_TOP_MID, 0, y);
@@ -144,16 +154,27 @@ void lora_app_create(lv_obj_t *parent) {
     lv_obj_set_pos(lbl_status, x, y);
 
     y += 22;
-    lv_obj_t *btn = lv_button_create(scr);
-    lv_obj_set_size(btn, 340, 45); lv_obj_set_pos(btn, x, y);
-    lv_obj_set_style_bg_color(btn, BG, 0);
-    lv_obj_set_style_border_color(btn, G, 0);
-    lv_obj_set_style_border_width(btn, 1, 0);
-    lv_obj_set_style_radius(btn, 0, 0);
-    lv_obj_add_event_cb(btn, toggle_cb, LV_EVENT_CLICKED, nullptr);
-    lv_obj_t *bl = lv_label_create(btn);
-    lv_label_set_text(bl, "START / STOP MESHCORE");
-    lv_obj_set_style_text_color(bl, G, 0); lv_obj_center(bl);
+    lv_obj_t *btn_m = lv_button_create(scr);
+    lv_obj_set_size(btn_m, 165, 45); lv_obj_set_pos(btn_m, x, y);
+    lv_obj_set_style_bg_color(btn_m, BG, 0);
+    lv_obj_set_style_border_color(btn_m, G, 0);
+    lv_obj_set_style_border_width(btn_m, 1, 0);
+    lv_obj_set_style_radius(btn_m, 0, 0);
+    lv_obj_add_event_cb(btn_m, toggle_meshcore_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *bl_m = lv_label_create(btn_m);
+    lv_label_set_text(bl_m, "MESHCORE");
+    lv_obj_set_style_text_color(bl_m, G, 0); lv_obj_center(bl_m);
+
+    lv_obj_t *btn_t = lv_button_create(scr);
+    lv_obj_set_size(btn_t, 165, 45); lv_obj_set_pos(btn_t, x + 175, y);
+    lv_obj_set_style_bg_color(btn_t, BG, 0);
+    lv_obj_set_style_border_color(btn_t, G, 0);
+    lv_obj_set_style_border_width(btn_t, 1, 0);
+    lv_obj_set_style_radius(btn_t, 0, 0);
+    lv_obj_add_event_cb(btn_t, toggle_meshtastic_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *bl_t = lv_label_create(btn_t);
+    lv_label_set_text(bl_t, "MESHTASTIC");
+    lv_obj_set_style_text_color(bl_t, G, 0); lv_obj_center(bl_t);
 
     y += 53;
     btn_send = lv_button_create(scr);
@@ -183,7 +204,7 @@ void lora_app_create(lv_obj_t *parent) {
     lv_obj_set_width(lbl_msgs, 350);
     lv_label_set_long_mode(lbl_msgs, LV_LABEL_LONG_WRAP);
 
-    if (!lora_svc_is_running()) lora_svc_start();
+    if (!lora_svc_is_running()) lora_svc_start(MODE_MESHCORE);
 }
 
 void lora_app_update(void) {
@@ -191,7 +212,8 @@ void lora_app_update(void) {
 
     if (lbl_status) {
         if (lora_svc_is_running()) {
-            char b[64]; snprintf(b, sizeof(b), "ON | Nodes:%d Msgs:%d",
+            char b[64]; snprintf(b, sizeof(b), "%s | Nodes:%d Msgs:%d",
+                lora_svc_get_mode() == MODE_MESHTASTIC ? "MESHTASTIC" : "MESHCORE",
                 lora_svc_node_count(), lora_svc_message_count());
             lv_label_set_text(lbl_status, b);
         } else {

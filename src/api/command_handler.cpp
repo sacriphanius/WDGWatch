@@ -116,7 +116,7 @@ static char* cmd_nfc_download(int idx) {
     return buf;
 }
 
-static char* cmd_lora_start(void)  { lora_svc_start(); return strdup("{\"ok\":true,\"msg\":\"meshcore started\"}"); }
+static char* cmd_lora_start(void)  { lora_svc_start(MODE_MESHCORE); return strdup("{\"ok\":true,\"msg\":\"meshcore started\"}"); }
 static char* cmd_lora_stop(void)   { lora_svc_stop(); return strdup("{\"ok\":true}"); }
 static char* cmd_lora_advert(void) { lora_svc_send_advert(); return strdup("{\"ok\":true}"); }
 

@@ -617,7 +617,7 @@ static void process_hw_flags(void) {
         else if (strcmp(pending_svc, "nfc") == 0) { instance.powerControl(POWER_NFC, pending_svc_en); svc_nfc = pending_svc_en; }
         else if (strcmp(pending_svc, "haptic") == 0) { haptic_set_enabled(pending_svc_en); }
     }
-    if (flag_lora_start) { flag_lora_start = false; lora_svc_start(); }
+    if (flag_lora_start) { flag_lora_start = false; lora_svc_start(MODE_MESHCORE); }
     if (flag_lora_stop)  { flag_lora_stop  = false; lora_svc_stop(); }
     if (flag_lora_advert){ flag_lora_advert= false; lora_svc_send_advert(); }
     if (flag_lora_send)  { flag_lora_send  = false; lora_svc_send_message(pending_lora_text); }

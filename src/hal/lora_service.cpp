@@ -24,6 +24,14 @@
 #define MC_PUBLIC_HASH  0x11
 #define MC_TCXO_VOLTAGE 3.0f
 
+#define MT_FREQ         869.525f
+#define MT_BW           250.0f
+#define MT_SF           11
+#define MT_CR           5
+#define MT_SYNC_WORD    0x2B
+
+static LoraMode current_mode = MODE_MESHCORE;
+
 static const uint8_t MC_PUBLIC_SECRET[32] = {
     0x8b, 0x33, 0x87, 0xe9, 0xc5, 0xcd, 0xea, 0x6a,
     0xc9, 0xe5, 0xed, 0xba, 0xa1, 0x15, 0xcd, 0x72,
@@ -330,23 +338,22 @@ static int build_group_text(const char *text, uint8_t *out) {
 }
 
 static bool configure_radio(void) {
+    float freq = (current_mode == MODE_MESHTASTIC) ? MT_FREQ : MC_FREQ;
+    float bw = (current_mode == MODE_MESHTASTIC) ? MT_BW : MC_BW;
+    int sf = (current_mode == MODE_MESHTASTIC) ? MT_SF : MC_SF;
+    int cr = (current_mode == MODE_MESHTASTIC) ? MT_CR : MC_CR;
+    uint16_t sync = (current_mode == MODE_MESHTASTIC) ? MT_SYNC_WORD : RADIOLIB_SX126X_SYNC_WORD_PRIVATE;
 
-    int err = radio.begin(MC_FREQ, MC_BW, MC_SF, MC_CR,
-                          RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
-                          14, MC_PREAMBLE, 1.6f);
+    int err = radio.begin(freq, bw, sf, cr, sync, 14, MC_PREAMBLE, 1.6f);
 
     if (err == RADIOLIB_ERR_SPI_CMD_FAILED || err == RADIOLIB_ERR_SPI_CMD_INVALID) {
         Serial.println("[MC] Retry with TCXO=0");
-        err = radio.begin(MC_FREQ, MC_BW, MC_SF, MC_CR,
-                          RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
-                          14, MC_PREAMBLE, 0.0f);
+        err = radio.begin(freq, bw, sf, cr, sync, 14, MC_PREAMBLE, 0.0f);
     }
 
     if (err != RADIOLIB_ERR_NONE) {
         Serial.printf("[MC] Retry with TCXO=3.0 (prev err=%d)\n", err);
-        err = radio.begin(MC_FREQ, MC_BW, MC_SF, MC_CR,
-                          RADIOLIB_SX126X_SYNC_WORD_PRIVATE,
-                          14, MC_PREAMBLE, 3.0f);
+        err = radio.begin(freq, bw, sf, cr, sync, 14, MC_PREAMBLE, 3.0f);
     }
 
     if (err != RADIOLIB_ERR_NONE) {
@@ -360,7 +367,8 @@ static bool configure_radio(void) {
 
     radio.setRxBoostedGainMode(true);
 
-    Serial.printf("[MC] Radio OK: %.3fMHz SF%d BW%.1fk CR%d\n", MC_FREQ, MC_SF, MC_BW, MC_CR);
+    Serial.printf("[%s] Radio OK: %.3fMHz SF%d BW%.1fk CR%d\n", 
+                  current_mode == MODE_MESHTASTIC ? "MT" : "MC", freq, sf, bw, cr);
     return true;
 }
 
@@ -428,11 +436,11 @@ void lora_service_loop(void) {
         int err = radio.transmit(tx_buf, tx_len);
         Serial.printf("[MC] TX: %d\n", err);
 
-        radio.setFrequency(MC_FREQ);
-        radio.setBandwidth(MC_BW);
-        radio.setSpreadingFactor(MC_SF);
-        radio.setCodingRate(MC_CR);
-        radio.setSyncWord(RADIOLIB_SX126X_SYNC_WORD_PRIVATE);
+        radio.setFrequency(current_mode == MODE_MESHTASTIC ? MT_FREQ : MC_FREQ);
+        radio.setBandwidth(current_mode == MODE_MESHTASTIC ? MT_BW : MC_BW);
+        radio.setSpreadingFactor(current_mode == MODE_MESHTASTIC ? MT_SF : MC_SF);
+        radio.setCodingRate(current_mode == MODE_MESHTASTIC ? MT_CR : MC_CR);
+        radio.setSyncWord(current_mode == MODE_MESHTASTIC ? MT_SYNC_WORD : RADIOLIB_SX126X_SYNC_WORD_PRIVATE);
         radio.setPreambleLength(MC_PREAMBLE);
         radio.setCRC(1);
         radio.setDio2AsRfSwitch(true);
@@ -498,8 +506,13 @@ static void do_stop(void) {
     running = false; radio_ok = false;
 }
 
-void lora_svc_start(void) { start_requested = true; }
+void lora_svc_start(LoraMode mode) { 
+    current_mode = mode;
+    start_requested = true; 
+}
 void lora_svc_stop(void)  { stop_requested = true; }
+
+LoraMode lora_svc_get_mode(void) { return current_mode; }
 
 void lora_svc_send_message(const char *text) {
     if (!running) return;
