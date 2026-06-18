@@ -1,5 +1,6 @@
 #include "lora_service.h"
 #include <RadioLib.h>
+#include <protocols/Pager/Pager.h>
 #include <esp_mac.h>
 #include <LilyGoLib.h>
 #include <LilyGo_LoRa_Pager.h>
@@ -32,6 +33,55 @@
 
 static LoraMode current_mode = MODE_MESHCORE;
 
+static const uint8_t defaultpsk[16] = {
+    0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59,
+    0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01
+};
+
+static uint32_t get_our_node_num(void) {
+    uint8_t mac[6];
+    esp_efuse_mac_get_default(mac);
+    return (mac[2] << 24) | (mac[3] << 16) | (mac[4] << 8) | mac[5];
+}
+
+static uint32_t read_varint(const uint8_t *&ptr, const uint8_t *end) {
+    uint32_t val = 0;
+    int shift = 0;
+    while (ptr < end) {
+        uint8_t b = *ptr++;
+        val |= (uint32_t)(b & 0x7F) << shift;
+        if (!(b & 0x80)) break;
+        shift += 7;
+    }
+    return val;
+}
+
+static int encode_varint(uint8_t *buf, uint32_t val) {
+    int len = 0;
+    while (val >= 0x80) {
+        buf[len++] = (uint8_t)((val & 0x7F) | 0x80);
+        val >>= 7;
+    }
+    buf[len++] = (uint8_t)val;
+    return len;
+}
+
+static void aes_ctr_crypt(const uint8_t *key, const uint8_t *nonce, const uint8_t *in, uint8_t *out, size_t len) {
+    mbedtls_aes_context ctx;
+    mbedtls_aes_init(&ctx);
+    mbedtls_aes_setkey_enc(&ctx, key, 128);
+    
+    uint8_t nonce_counter[16];
+    memcpy(nonce_counter, nonce, 16);
+    
+    uint8_t stream_block[16] = {0};
+    size_t nc_off = 0;
+    
+    mbedtls_aes_crypt_ctr(&ctx, len, &nc_off, nonce_counter, stream_block, in, out);
+    
+    mbedtls_aes_free(&ctx);
+}
+
 static const uint8_t MC_PUBLIC_SECRET[32] = {
     0x8b, 0x33, 0x87, 0xe9, 0xc5, 0xcd, 0xea, 0x6a,
     0xc9, 0xe5, 0xed, 0xba, 0xa1, 0x15, 0xcd, 0x72,
@@ -49,6 +99,42 @@ static volatile bool new_msg_flag = false;
 static volatile bool new_msg_web_flag = false;
 static volatile bool new_msg_ble_flag = false;
 static volatile bool rx_flag = false;
+static bool nodeinfo_needed = false;
+static uint32_t nodeinfo_timer = 0;
+static float custom_freq = 868.00f;
+static uint32_t current_ric = 1234567;
+
+static uint8_t calc_channel_hash(const char *name, const uint8_t *key, size_t key_len) {
+    uint8_t h = 0;
+    while (*name) {
+        h ^= (uint8_t)*name++;
+    }
+    for (size_t i = 0; i < key_len; i++) {
+        h ^= key[i];
+    }
+    return h;
+}
+
+static int encode_string_field(uint8_t *buf, uint32_t field_num, const char *str) {
+    int len = 0;
+    buf[len++] = (uint8_t)((field_num << 3) | 2);
+    int slen = strlen(str);
+    len += encode_varint(buf + len, slen);
+    memcpy(buf + len, str, slen);
+    len += slen;
+    return len;
+}
+
+static int encode_bytes_field(uint8_t *buf, uint32_t field_num, const uint8_t *data, size_t dlen) {
+    int len = 0;
+    buf[len++] = (uint8_t)((field_num << 3) | 2);
+    len += encode_varint(buf + len, dlen);
+    memcpy(buf + len, data, dlen);
+    len += dlen;
+    return len;
+}
+
+static void send_meshtastic_nodeinfo(void);
 
 ICACHE_RAM_ATTR void lora_rx_isr(void) { rx_flag = true; }
 
@@ -80,6 +166,11 @@ static uint8_t ed25519_sk[64];
 static bool keypair_loaded = false;
 
 static void load_or_create_keypair(void) {
+    Preferences p;
+    if (p.begin("lora_svc", true)) {
+        current_ric = p.getUInt("ric", 1234567);
+        p.end();
+    }
     if (keypair_loaded) return;
     Preferences prefs;
     bool loaded = false;
@@ -142,6 +233,56 @@ static void hmac_sha256(const uint8_t *key, int kl, const uint8_t *data, int dl,
     mbedtls_md_free(&ctx);
 }
 
+static void send_meshtastic_nodeinfo(void) {
+    uint32_t our_node_num = get_our_node_num();
+    uint32_t pkt_id = esp_random();
+    
+    uint8_t user_buf[128];
+    int user_len = 0;
+    
+    char node_id_str[16];
+    snprintf(node_id_str, sizeof(node_id_str), "!%08x", our_node_num);
+    
+    user_len += encode_string_field(user_buf + user_len, 1, node_id_str);
+    user_len += encode_string_field(user_buf + user_len, 2, node_name);
+    
+    char short_name[6] = "WDGW";
+    user_len += encode_string_field(user_buf + user_len, 3, short_name);
+    
+    uint8_t mac[6];
+    esp_efuse_mac_get_default(mac);
+    user_len += encode_bytes_field(user_buf + user_len, 4, mac, 6);
+    
+    uint8_t plain_payload[256];
+    int plain_len = 0;
+    plain_payload[plain_len++] = 0x08;
+    plain_payload[plain_len++] = 0x04; // PortNum = NODEINFO_APP
+    plain_payload[plain_len++] = 0x12;
+    plain_len += encode_varint(plain_payload + plain_len, user_len);
+    memcpy(plain_payload + plain_len, user_buf, user_len);
+    plain_len += user_len;
+    
+    uint32_t dest = 0xFFFFFFFF; // Broadcast
+    memcpy(tx_buf, &dest, 4);
+    memcpy(tx_buf + 4, &our_node_num, 4);
+    memcpy(tx_buf + 8, &pkt_id, 4);
+    tx_buf[12] = 3; // hop_limit = 3
+    tx_buf[13] = calc_channel_hash("LongFast", defaultpsk, sizeof(defaultpsk)); // Dynamic LongFast hash
+    tx_buf[14] = 0;
+    tx_buf[15] = 0;
+    
+    uint8_t nonce[16] = {0};
+    uint64_t pkt_id_64 = pkt_id;
+    memcpy(nonce, &pkt_id_64, 8);
+    memcpy(nonce + 8, &our_node_num, 4);
+    
+    aes_ctr_crypt(defaultpsk, nonce, plain_payload, tx_buf + 16, plain_len);
+    tx_len = 16 + plain_len;
+    tx_pending = true;
+    
+    Serial.println("[MT] Queued NodeInfo announcement!");
+}
+
 static uint32_t dedup_times[DEDUP_SIZE];
 
 static bool is_duplicate_hp(uint8_t header, const uint8_t *payload, int plen) {
@@ -161,10 +302,66 @@ static bool is_duplicate_hp(uint8_t header, const uint8_t *payload, int plen) {
 
 static void dedup_preseed(const uint8_t *pkt, int len) {
     if (len < 3) return;
-    is_duplicate_hp(pkt[0], &pkt[2], len - 2);
+    if (current_mode == MODE_MESHTASTIC) {
+        if (len >= 16) {
+            is_duplicate_hp(pkt[12], pkt + 16, len - 16);
+        }
+    } else {
+        is_duplicate_hp(pkt[0], &pkt[2], len - 2);
+    }
 }
 
 static uint32_t get_unix_timestamp(void);
+
+static void save_message_to_sd(const char *channel_name, const MeshMsg &m) {
+    if (!SD.exists("/lora")) {
+        SD.mkdir("/lora");
+    }
+    
+    char path[64];
+    const char *fn = "other";
+    if (strcasecmp(channel_name, "public") == 0) fn = "meshcore";
+    else if (strcasecmp(channel_name, "LongFast") == 0) fn = "meshtastic";
+    else if (strcasecmp(channel_name, "POCSAG") == 0) fn = "pocsag";
+    else if (strcasecmp(channel_name, "BRUCE") == 0) fn = "bruce";
+    else fn = channel_name;
+    
+    snprintf(path, sizeof(path), "/lora/%s.txt", fn);
+    
+    String lines[25] = {};
+    int count = 0;
+    if (SD.exists(path)) {
+        File f = SD.open(path, FILE_READ);
+        if (f) {
+            while (f.available() && count < 20) {
+                String l = f.readStringUntil('\n');
+                if (l.length() > 0) {
+                    lines[count++] = l;
+                }
+            }
+            f.close();
+        }
+    }
+    
+    if (count >= 20) {
+        for (int i = 0; i < 19; i++) {
+            lines[i] = lines[i+1];
+        }
+        count = 19;
+    }
+    
+    char new_line[256];
+    snprintf(new_line, sizeof(new_line), "%lu|%s|%d|%.0f|%s", (unsigned long)m.timestamp, channel_name, m.hops, m.rssi, m.text);
+    lines[count++] = String(new_line);
+    
+    File f = SD.open(path, FILE_WRITE);
+    if (f) {
+        for (int i = 0; i < count; i++) {
+            f.println(lines[i]);
+        }
+        f.close();
+    }
+}
 
 static void store_message(const char *ch, const char *txt, float rssi, int hops) {
     MeshMsg &m = messages[msg_write];
@@ -180,14 +377,173 @@ static void store_message(const char *ch, const char *txt, float rssi, int hops)
     haptic_buzz();
     Serial.printf("[MC] MSG [%s] %dhop: %s\n", ch, hops, txt);
 
-    File f = SD.open("/meshcore_log.txt", FILE_APPEND);
-    if (f) {
-        f.printf("%lu|%s|%d|%.0f|%s\n", (unsigned long)m.timestamp, ch, hops, rssi, txt);
-        f.close();
-    }
+    save_message_to_sd(ch, m);
 }
 
 static void decode_packet(uint8_t *data, int len, float rssi, float snr) {
+    if (len <= 0) return;
+
+    if (current_mode == MODE_BRUCE) {
+        char *msg = (char*)malloc(len + 1);
+        if (msg) {
+            memcpy(msg, data, len);
+            msg[len] = '\0';
+            int mlen = len;
+            while (mlen > 0 && (msg[mlen - 1] == '\r' || msg[mlen - 1] == '\n')) {
+                msg[mlen - 1] = '\0';
+                mlen--;
+            }
+            
+            for (int i = 0; i < mlen; i++) {
+                if (msg[i] < 32 || msg[i] > 126) {
+                    msg[i] = '.';
+                }
+            }
+            store_message("BRUCE", msg, rssi, 0);
+            free(msg);
+        }
+        return;
+    }
+
+    if (current_mode == MODE_MESHTASTIC) {
+        if (len < 16) return;
+        
+        uint32_t dest, from, pkt_id;
+        memcpy(&dest, data, 4);
+        memcpy(&from, data + 4, 4);
+        memcpy(&pkt_id, data + 8, 4);
+        uint8_t flags = data[12];
+        uint8_t channel = data[13];
+        int hops = 3 - (flags & 0x07);
+        if (hops < 0) hops = 0;
+        
+        int crypt_len = len - 16;
+        if (crypt_len <= 0) return;
+        
+        uint8_t *decrypted = (uint8_t*)malloc(crypt_len);
+        if (!decrypted) return;
+        
+        uint8_t nonce[16] = {0};
+        uint64_t pkt_id_64 = pkt_id;
+        memcpy(nonce, &pkt_id_64, 8);
+        memcpy(nonce + 8, &from, 4);
+        
+        aes_ctr_crypt(defaultpsk, nonce, data + 16, decrypted, crypt_len);
+        
+        const uint8_t *ptr = decrypted;
+        const uint8_t *end = decrypted + crypt_len;
+        
+        int portnum = 0;
+        const uint8_t *payload_ptr = nullptr;
+        size_t payload_len = 0;
+        
+        while (ptr < end) {
+            uint32_t tag = read_varint(ptr, end);
+            uint32_t field_num = tag >> 3;
+            uint32_t wire_type = tag & 0x07;
+            
+            if (field_num == 1 && wire_type == 0) {
+                portnum = read_varint(ptr, end);
+            } else if (field_num == 2 && wire_type == 2) {
+                uint32_t bytes_len = read_varint(ptr, end);
+                if (ptr + bytes_len <= end) {
+                    payload_ptr = ptr;
+                    payload_len = bytes_len;
+                }
+                ptr += bytes_len;
+            } else {
+                if (wire_type == 0) {
+                    read_varint(ptr, end);
+                } else if (wire_type == 1) {
+                    ptr += 8;
+                } else if (wire_type == 2) {
+                    uint32_t l = read_varint(ptr, end);
+                    ptr += l;
+                } else if (wire_type == 5) {
+                    ptr += 4;
+                } else {
+                    break;
+                }
+            }
+        }
+        
+        if (portnum == 1 && payload_ptr && payload_len > 0) {
+            char *msg = (char*)malloc(payload_len + 1);
+            if (msg) {
+                memcpy(msg, payload_ptr, payload_len);
+                msg[payload_len] = '\0';
+                
+                if (!is_duplicate_hp(data[12], data + 16, crypt_len)) {
+                    char sender_name[48];
+                    snprintf(sender_name, sizeof(sender_name), "%08X", from);
+                    
+                    char display_msg[256];
+                    snprintf(display_msg, sizeof(display_msg), "%s: %s", sender_name, msg);
+                    
+                    store_message("LongFast", display_msg, rssi, hops);
+                }
+                free(msg);
+            }
+        }
+        
+        if (portnum == 4 && payload_ptr && payload_len > 0) { // NODEINFO_APP
+            const uint8_t *uptr = payload_ptr;
+            const uint8_t *uend = payload_ptr + payload_len;
+            char name[32] = "";
+            char sname[8] = "";
+            while (uptr < uend) {
+                uint32_t utag = read_varint(uptr, uend);
+                uint32_t ufield = utag >> 3;
+                uint32_t uwire = utag & 0x07;
+                if (ufield == 2 && uwire == 2) {
+                    uint32_t l = read_varint(uptr, uend);
+                    int copy_l = l > 31 ? 31 : l;
+                    if (uptr + l <= uend) {
+                        memcpy(name, uptr, copy_l);
+                        name[copy_l] = '\0';
+                    }
+                    uptr += l;
+                } else if (ufield == 3 && uwire == 2) {
+                    uint32_t l = read_varint(uptr, uend);
+                    int copy_l = l > 7 ? 7 : l;
+                    if (uptr + l <= uend) {
+                        memcpy(sname, uptr, copy_l);
+                        sname[copy_l] = '\0';
+                    }
+                    uptr += l;
+                } else {
+                    if (uwire == 0) read_varint(uptr, uend);
+                    else if (uwire == 1) uptr += 8;
+                    else if (uwire == 2) { uint32_t l = read_varint(uptr, uend); uptr += l; }
+                    else if (uwire == 5) uptr += 4;
+                    else break;
+                }
+            }
+            if (name[0]) {
+                bool found = false;
+                for (int i = 0; i < node_count; i++) {
+                    if (nodes[i].lat == 0.0f && strcmp(nodes[i].name, name) == 0) {
+                        nodes[i].rssi = rssi;
+                        nodes[i].snr = snr;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found && node_count < MAX_NODES) {
+                    MeshNode &n = nodes[node_count++];
+                    strncpy(n.name, name, 31);
+                    strncpy(n.type, "Client", 15);
+                    n.lat = 0; n.lon = 0;
+                    n.rssi = rssi; n.snr = snr;
+                    memset(n.pubkey, 0, 32);
+                }
+                Serial.printf("[MT] Learned node: %s (%s)\n", name, sname);
+            }
+        }
+        free(decrypted);
+        return;
+    }
+
     if (len < 3) return;
 
     uint8_t header = data[0];
@@ -338,37 +694,71 @@ static int build_group_text(const char *text, uint8_t *out) {
 }
 
 static bool configure_radio(void) {
-    float freq = (current_mode == MODE_MESHTASTIC) ? MT_FREQ : MC_FREQ;
-    float bw = (current_mode == MODE_MESHTASTIC) ? MT_BW : MC_BW;
-    int sf = (current_mode == MODE_MESHTASTIC) ? MT_SF : MC_SF;
-    int cr = (current_mode == MODE_MESHTASTIC) ? MT_CR : MC_CR;
-    uint16_t sync = (current_mode == MODE_MESHTASTIC) ? MT_SYNC_WORD : RADIOLIB_SX126X_SYNC_WORD_PRIVATE;
+    int err = RADIOLIB_ERR_NONE;
 
-    int err = radio.begin(freq, bw, sf, cr, sync, 14, MC_PREAMBLE, 1.6f);
+    if (current_mode == MODE_POCSAG) {
+        float freq = 439.9875f;
+        float br = 1.2f;
+        float freqDev = 4.5f;
+        
+        err = radio.beginFSK(freq, br, freqDev, 58.6f, 14, 16, 1.6f);
+        if (err == RADIOLIB_ERR_SPI_CMD_FAILED || err == RADIOLIB_ERR_SPI_CMD_INVALID) {
+            err = radio.beginFSK(freq, br, freqDev, 58.6f, 14, 16, 0.0f);
+        }
+        if (err != RADIOLIB_ERR_NONE) {
+            err = radio.beginFSK(freq, br, freqDev, 58.6f, 14, 16, 3.0f);
+        }
+        if (err != RADIOLIB_ERR_NONE) {
+            Serial.printf("[MC] FSK begin failed: %d\n", err);
+            return false;
+        }
+        
+        radio.setCRC(0);
+        radio.setDio2AsRfSwitch(true);
+        Serial.printf("[FSK] Radio OK: %.4fMHz (Mode: POCSAG)\n", freq);
+        return true;
+    }
+
+    float freq = MC_FREQ;
+    float bw = MC_BW;
+    int sf = MC_SF;
+    int cr = MC_CR;
+    uint16_t sync = RADIOLIB_SX126X_SYNC_WORD_PRIVATE;
+
+    if (current_mode == MODE_MESHTASTIC) {
+        freq = MT_FREQ;
+        bw = MT_BW;
+        sf = MT_SF;
+        cr = MT_CR;
+        sync = MT_SYNC_WORD;
+    } else if (current_mode == MODE_BRUCE) {
+        freq = custom_freq;
+        bw = 125.0f;
+        sf = 7;
+        cr = 5;
+        sync = 0x12; // Standard public SyncWord
+    }
+
+    err = radio.begin(freq, bw, sf, cr, sync, 14, MC_PREAMBLE, 1.6f);
 
     if (err == RADIOLIB_ERR_SPI_CMD_FAILED || err == RADIOLIB_ERR_SPI_CMD_INVALID) {
-        Serial.println("[MC] Retry with TCXO=0");
         err = radio.begin(freq, bw, sf, cr, sync, 14, MC_PREAMBLE, 0.0f);
     }
-
     if (err != RADIOLIB_ERR_NONE) {
-        Serial.printf("[MC] Retry with TCXO=3.0 (prev err=%d)\n", err);
         err = radio.begin(freq, bw, sf, cr, sync, 14, MC_PREAMBLE, 3.0f);
     }
-
     if (err != RADIOLIB_ERR_NONE) {
         Serial.printf("[MC] Radio begin failed: %d\n", err);
         return false;
     }
 
     radio.setCRC(1);
-
     radio.setDio2AsRfSwitch(true);
-
     radio.setRxBoostedGainMode(true);
 
-    Serial.printf("[%s] Radio OK: %.3fMHz SF%d BW%.1fk CR%d\n", 
-                  current_mode == MODE_MESHTASTIC ? "MT" : "MC", freq, sf, bw, cr);
+    Serial.printf("[LoRa] Radio OK: %.3fMHz SF%d BW%.1fk CR%d (Mode: %s)\n", 
+                  freq, sf, bw, cr, 
+                  current_mode == MODE_MESHCORE ? "MESHCORE" : (current_mode == MODE_MESHTASTIC ? "MESHTASTIC" : "BRUCE"));
     return true;
 }
 
@@ -411,22 +801,97 @@ void lora_service_loop(void) {
 
     if (!running || !radio_ok) return;
 
+    if (nodeinfo_needed && (millis() - nodeinfo_timer > 3000)) {
+        nodeinfo_needed = false;
+        send_meshtastic_nodeinfo();
+    }
+
     if (msg_send_requested) {
         msg_send_requested = false;
-        tx_len = build_group_text(pending_msg, tx_buf);
-        tx_pending = true;
-        char own[200]; snprintf(own, sizeof(own), "%s: %s", node_name, pending_msg);
-        store_message("public", own, 0, 0);
+        if (current_mode == MODE_MESHTASTIC) {
+            uint32_t our_node_num = get_our_node_num();
+            uint32_t pkt_id = esp_random();
+            
+            uint8_t plain_payload[256];
+            int plain_len = 0;
+            plain_payload[plain_len++] = 0x08;
+            plain_payload[plain_len++] = 0x01; // PortNum = TEXT_MESSAGE_APP
+            plain_payload[plain_len++] = 0x12;
+            int text_len = strlen(pending_msg);
+            plain_len += encode_varint(plain_payload + plain_len, text_len);
+            memcpy(plain_payload + plain_len, pending_msg, text_len);
+            plain_len += text_len;
+            
+            uint32_t dest = 0xFFFFFFFF; // Broadcast
+            memcpy(tx_buf, &dest, 4);
+            memcpy(tx_buf + 4, &our_node_num, 4);
+            memcpy(tx_buf + 8, &pkt_id, 4);
+            tx_buf[12] = 3; // hop_limit = 3
+            tx_buf[13] = calc_channel_hash("LongFast", defaultpsk, sizeof(defaultpsk)); // Dynamic LongFast hash
+            tx_buf[14] = 0; // next_hop
+            tx_buf[15] = 0; // relay_node
+            
+            uint8_t nonce[16] = {0};
+            uint64_t pkt_id_64 = pkt_id;
+            memcpy(nonce, &pkt_id_64, 8);
+            memcpy(nonce + 8, &our_node_num, 4);
+            
+            aes_ctr_crypt(defaultpsk, nonce, plain_payload, tx_buf + 16, plain_len);
+            tx_len = 16 + plain_len;
+            tx_pending = true;
+            
+            char own[256];
+            snprintf(own, sizeof(own), "%s: %s", node_name, pending_msg);
+            store_message("LongFast", own, 0, 0);
+        } else if (current_mode == MODE_POCSAG) {
+            PagerClient pager(&radio);
+            pager.begin(439.9875f, 1200);
+            
+            char msg_to_send[256];
+            snprintf(msg_to_send, sizeof(msg_to_send), "WDGW: %s", pending_msg);
+            
+            radio.clearPacketReceivedAction();
+            int err = pager.transmit(msg_to_send, current_ric, RADIOLIB_PAGER_ASCII);
+            Serial.printf("[MC] POCSAG TX: %d\n", err);
+            
+            store_message("POCSAG", msg_to_send, 0, 0);
+            
+            configure_radio();
+            radio.setPacketReceivedAction(lora_rx_isr);
+            radio.startReceive();
+        } else if (current_mode == MODE_BRUCE) {
+            char msg_to_send[256];
+            snprintf(msg_to_send, sizeof(msg_to_send), "WDGW: %s", pending_msg);
+            
+            tx_len = strlen(msg_to_send);
+            memcpy(tx_buf, msg_to_send, tx_len);
+            tx_pending = true;
+            
+            char display_msg[256];
+            snprintf(display_msg, sizeof(display_msg), "WDGW: %s", pending_msg);
+            store_message("BRUCE", display_msg, 0, 0);
+        } else {
+            tx_len = build_group_text(pending_msg, tx_buf);
+            tx_pending = true;
+            char own[200]; snprintf(own, sizeof(own), "%s: %s", node_name, pending_msg);
+            store_message("public", own, 0, 0);
+        }
     }
     if (advert_requested) {
         advert_requested = false;
-        do_send_advert();
+        if (current_mode == MODE_MESHTASTIC) {
+            send_meshtastic_nodeinfo();
+        } else {
+            do_send_advert();
+        }
     }
 
     if (tx_pending) {
         tx_pending = false;
 
-        dedup_preseed(tx_buf, tx_len);
+        if (current_mode == MODE_MESHCORE || current_mode == MODE_MESHTASTIC) {
+            dedup_preseed(tx_buf, tx_len);
+        }
 
         Serial.printf("[MC] TX %d bytes: ", tx_len);
         for (int i = 0; i < tx_len; i++) Serial.printf("%02X", tx_buf[i]);
@@ -436,14 +901,7 @@ void lora_service_loop(void) {
         int err = radio.transmit(tx_buf, tx_len);
         Serial.printf("[MC] TX: %d\n", err);
 
-        radio.setFrequency(current_mode == MODE_MESHTASTIC ? MT_FREQ : MC_FREQ);
-        radio.setBandwidth(current_mode == MODE_MESHTASTIC ? MT_BW : MC_BW);
-        radio.setSpreadingFactor(current_mode == MODE_MESHTASTIC ? MT_SF : MC_SF);
-        radio.setCodingRate(current_mode == MODE_MESHTASTIC ? MT_CR : MC_CR);
-        radio.setSyncWord(current_mode == MODE_MESHTASTIC ? MT_SYNC_WORD : RADIOLIB_SX126X_SYNC_WORD_PRIVATE);
-        radio.setPreambleLength(MC_PREAMBLE);
-        radio.setCRC(1);
-        radio.setDio2AsRfSwitch(true);
+        configure_radio();
         radio.setPacketReceivedAction(lora_rx_isr);
         radio.startReceive();
     }
@@ -493,7 +951,11 @@ static void check_lora_init(void) {
     if (err == RADIOLIB_ERR_NONE) {
         radio_ok = true;
         running = true;
-        Serial.println("[MC] MeshCore RX started!");
+        Serial.printf("[%s] RX started!\n", current_mode == MODE_MESHTASTIC ? "MT" : "MC");
+        if (current_mode == MODE_MESHTASTIC) {
+            nodeinfo_needed = true;
+            nodeinfo_timer = millis();
+        }
     } else {
         Serial.printf("[MC] startReceive err: %d\n", err);
     }
@@ -507,6 +969,9 @@ static void do_stop(void) {
 }
 
 void lora_svc_start(LoraMode mode) { 
+    if (running && current_mode != mode) {
+        do_stop();
+    }
     current_mode = mode;
     start_requested = true; 
 }
@@ -630,4 +1095,25 @@ void lora_svc_load_history(void) {
     }
     f.close();
     Serial.printf("[MC] Loaded %d messages from SD\n", loaded);
+}
+
+void lora_svc_set_ric(uint32_t ric) {
+    current_ric = ric;
+    Preferences prefs;
+    if (prefs.begin("lora_svc", false)) {
+        prefs.putUInt("ric", ric);
+        prefs.end();
+    }
+}
+
+uint32_t lora_svc_get_ric(void) {
+    return current_ric;
+}
+
+void lora_svc_set_freq(float freq_mhz) {
+    custom_freq = freq_mhz;
+}
+
+float lora_svc_get_freq(void) {
+    return custom_freq;
 }

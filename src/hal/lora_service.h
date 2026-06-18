@@ -19,8 +19,15 @@ struct MeshNode {
 
 enum LoraMode {
     MODE_MESHCORE = 0,
-    MODE_MESHTASTIC = 1
+    MODE_MESHTASTIC = 1,
+    MODE_POCSAG = 2,
+    MODE_BRUCE = 3
 };
+
+void lora_svc_set_ric(uint32_t ric);
+uint32_t lora_svc_get_ric(void);
+void lora_svc_set_freq(float freq_mhz);
+float lora_svc_get_freq(void);
 
 void lora_service_init(void);
 void lora_service_loop(void);

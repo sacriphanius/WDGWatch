@@ -57,11 +57,21 @@ Leverages the onboard SX1262 transceiver to provide RF security research tools:
 *   **BLE Tracker:** Searches for nearby Bluetooth Low Energy devices and actively checks manufacturer data payloads to flag Apple AirTags or other trackers **(Web UI)**.
 *   **Dynamic Timezone Configuration:** WiFi menu includes a **CLOCK** button. When connected to WiFi, users can select from 38 global cities to configure the system timezone. Timezone is persisted in NVS and automatically triggers an NTP re-sync to apply local time offset and DST rules.
 
-### 5. 🌌 LoRa MeshCore Node ("SCRW")
-*   Tunes to `869.618 MHz` (SF8 / BW62.5 / CR5) to act as a wearable node.
-*   Secures transmissions using per-packet HMAC-SHA256 authentication.
-*   Supports Ed25519-signed presence advertisements and logs the last 20 public messages directly to the SD card.
-*   **LoRa Web Messenger:** Start/stop MeshCore RX, view incoming encrypted messages with hop/RSSI, send custom messages, and broadcast presence adverts **(Web UI)**.
+### 5. 🌌 Multi-Protocol LoRa & FSK Radio Integration
+The device utilizes the onboard SX1262 transceiver to interface with multiple decentralized radio networks and paging protocols:
+*   **MeshCore Protocol**  
+    ![MeshCore](https://img.shields.io/badge/MeshCore-00E5FF?style=for-the-badge&logo=hive&logoColor=black)  
+    Operates on `869.618 MHz` (SF8 / BW62.5 / CR5) for the Watch Dogs Go mesh network. Features secure packet authentication via HMAC-SHA256 and Ed25519 signature verification. Saves session message logs directly to the SD card.
+*   **Meshtastic Protocol**  
+    ![Meshtastic](https://img.shields.io/badge/Meshtastic-005f6b?style=for-the-badge&logo=esphome&logoColor=00e5ff)  
+    Operates on the Standard `869.525 MHz` LongFast channel (SF11 / BW250 / CR5) for decentralized open-mesh text messaging and automatic NodeInfo network announcements.
+*   **POCSAG Pager (FSK)**  
+    ![POCSAG Pager](https://img.shields.io/badge/POCSAG_Pager-00E5FF?style=for-the-badge&logo=pagerduty&logoColor=black)  
+    Configurable RIC pager transmission (default `439.9875 MHz` FSK) with ASCII encoding. Tap the RIC code box in the "Other Devices" menu to dynamically input target RIC pager addresses.
+*   **Bruce Firmware Chat (FSK)**  
+    ![Bruce Firmware](https://img.shields.io/badge/Bruce_Firmware-005f6b?style=for-the-badge&logo=gitbook&logoColor=00e5ff)  
+    FSK compatibility with Bruce firmware Sub-GHz chat devices, running on selected presets (`433.920 MHz`, `868.000 MHz`, `915.000 MHz`).
+*   **LoRa Web & Watch Terminal UI:** Includes a dynamic, 4-direction scrollable console terminal logging incoming messages across all networks in real-time, with automated session-specific logging to the SD card (`/lora/`).
 
 ### 6. 🏷️ NFC Scan, Save & Emulation
 *   **NFC Scan:** Reads ISO-14443A HF tags and NDEF payloads via the ST25R3916 chip **(Web UI)**.
@@ -121,8 +131,10 @@ The SCR-Bit virtual pet evolves into an autonomous cyber-recon agent via the **P
 | 🛜 **SSID Beacon Spoofer** | 🟢 Yes | 🔴 No | — | Up to 15 SSIDs |
 | 😈 **Evil Twin AP Creator** | 🟢 Yes | 🟢 Yes | `evil_twin` | Basic AP |
 | 🏷️ **NFC Scan (ISO-14443A/NDEF)** | 🟢 Yes | 🟢 Yes | `nfc_scan` | Stable |
-| 💾 **NFC Save & Flipper Export** | 🟢 Yes | 🟢 Yes | `nfc_export` | Stable |
 | 🌌 **LoRa MeshCore Node ("SCRW")** | 🟢 Yes | 🟢 Yes | `lora_send` | 869.618 MHz |
+| 🛜 **Meshtastic Chat (LongFast)** | 🟢 Yes | 🟢 Yes | — | 869.525 MHz |
+| 📟 **POCSAG Pager (FSK)** | 🟢 Yes | 🟢 Yes | — | RIC Code Input |
+| 📻 **Bruce Chat (FSK)** | 🟢 Yes | 🟢 Yes | — | 433/868/915 MHz |
 | 🔐 **LoRa Ed25519 Adverts** | 🟢 Auto | 🔴 No | — | Cryptographic |
 | 👾 **SCR-Bit Virtual Pet** | 🟢 Yes | 🟢 Yes | `pet_status` | 0% Battery Idle |
 | 📻 **SX1262 Jammer + Countdown** | 🟢 Yes | 🟢 Yes | `rf_status` | Timer-Locked |
@@ -319,11 +331,21 @@ SX1262 alıcı-vericisini kullanarak güvenlik araştırması araçları sunar:
 *   **BLE Tracker:** Çevredeki Bluetooth Low Energy cihazlarını tarar ve Apple AirTag gibi takip cihazlarını tespit etmek için üretici veri paketlerini analiz eder **(Web Arayüzü)**.
 *   **Dinamik Zaman Dilimi Ayarı (Saat Dilimi):** WiFi menüsünde **CLOCK** butonu eklenmiştir. Cihaz WiFi ağına bağlandığında aktifleşen bu buton, 38 farklı dünya şehrini içeren dokunmatik ve kaydırılabilir bir liste sunar. NVS'ye kaydedilir ve otomatik NTP senkronizasyonunu tetikler.
 
-### 5. 🌌 LoRa MeshCore Düğümü ("SCRW")
-*   `869.618 MHz` (SF8 / BW62.5 / CR5) frekansında çalışarak mesh ağına bağlanır.
-*   Veri paketlerini HMAC-SHA256 kimlik doğrulamasıyla şifreler.
-*   Ed25519 imzalı reklam paketleri gönderir ve gelen son 20 mesajı SD kartta saklar.
-*   **LoRa Web Messenger:** MeshCore RX başlatıp durdurma, gelen şifreli mesajları (hop/RSSI ile) görüntüleme, sohbet mesajı gönderme ve durum ilanı yayını yapma **(Web Arayüzü)**.
+### 5. 🌌 Çoklu Protokol LoRa & FSK Radyo Entegrasyonu
+Cihaz, dahili SX1262 alıcı-vericisini kullanarak çeşitli merkeziyetsiz telsiz ağları ve çağrı cihazı (pager) protokolleri ile haberleşebilir:
+*   **MeshCore Protokolü**  
+    ![MeshCore](https://img.shields.io/badge/MeshCore-00E5FF?style=for-the-badge&logo=hive&logoColor=black)  
+    Watch Dogs Go mesh ağı için `869.618 MHz` (SF8 / BW62.5 / CR5) frekansında çalışır. HMAC-SHA256 paket doğrulama ve Ed25519 imzalı reklam paketleri desteği ile güvenli iletişim sunar.
+*   **Meshtastic Protokolü**  
+    ![Meshtastic](https://img.shields.io/badge/Meshtastic-005f6b?style=for-the-badge&logo=esphome&logoColor=00e5ff)  
+    Merkeziyetsiz açık mesh mesajlaşması için standart `869.525 MHz` LongFast kanalı (SF11 / BW250 / CR5) üzerinde çalışır ve otonom NodeInfo duyuruları yayınlar.
+*   **POCSAG Çağrı Cihazı (FSK Pager)**  
+    ![POCSAG Pager](https://img.shields.io/badge/POCSAG_Pager-00E5FF?style=for-the-badge&logo=pagerduty&logoColor=black)  
+    Alfanümerik çağrı cihazlarına ASCII formatında mesaj göndermek için ayarlanabilir RIC kodlu FSK modülasyonu (varsayılan `439.9875 MHz`). "Other Devices" ayar ekranından hedef çağrı kodunu (RIC) dinamik olarak değiştirebilirsiniz.
+*   **Bruce Firmware Chat (FSK)**  
+    ![Bruce Firmware](https://img.shields.io/badge/Bruce_Firmware-005f6b?style=for-the-badge&logo=gitbook&logoColor=00e5ff)  
+    Bruce yazılımı kullanan cihazlarla FSK tabanlı Sub-GHz mesajlaşma uyumluluğu. En çok kullanılan frekanslar (`433.920 MHz`, `868.000 MHz`, `915.000 MHz`) arasında dinamik geçiş imkanı sağlar.
+*   **LoRa Web ve Saat Terminal Arayüzü:** Gelen mesajları anlık olarak gösteren, 4 yöne kaydırılabilir retro konsol ekranı ve her protokol oturumu için SD kartta `/lora/` dizininde otomatik dosya tabanlı kayıt (log) tutma sistemi.
 
 ### 6. 🏷️ NFC Tarama ve Emülasyon
 *   **NFC Tarama:** ST25R3916 entegresini kullanarak 13.56 MHz NFC etiketlerini ve NDEF mesaj içeriklerini okur **(Web Arayüzü)**.
@@ -383,8 +405,10 @@ SCR-Bit sanal peti, **Politician** pasif yakalama motoru sayesinde otonom bir si
 | 🛜 **SSID Beacon Spoofer** | 🟢 Evet | 🔴 Hayır | — | 15 SSID'ye Kadar |
 | 😈 **Evil Twin AP Oluşturucu** | 🟢 Evet | 🟢 Evet | `evil_twin` | Temel AP |
 | 🏷️ **NFC Tarama (ISO-14443A/NDEF)** | 🟢 Evet | 🟢 Evet | `nfc_scan` | Kararlı |
-| 💾 **NFC Kaydetme ve Flipper Dışa Aktarma** | 🟢 Evet | 🟢 Evet | `nfc_export` | Kararlı |
 | 🌌 **LoRa MeshCore Düğümü ("SCRW")** | 🟢 Evet | 🟢 Evet | `lora_send` | 869.618 MHz |
+| 🛜 **Meshtastic Sohbet (LongFast)** | 🟢 Evet | 🟢 Evet | — | 869.525 MHz |
+| 📟 **POCSAG Pager (FSK)** | 🟢 Evet | 🟢 Evet | — | RIC Kod Girişi |
+| 📻 **Bruce Sohbet (FSK)** | 🟢 Evet | 🟢 Evet | — | 433/868/915 MHz |
 | 🔐 **LoRa Ed25519 İmzalı Reklamlar** | 🟢 Oto | 🔴 Hayır | — | Kriptografik |
 | 👾 **SCR-Bit Sanal Pet** | 🟢 Evet | 🟢 Evet | `pet_status` | Sıfır Güç Tüketimi |
 | 📻 **SX1262 Jammer + Geri Sayım** | 🟢 Evet | 🟢 Evet | `rf_status` | Süre Kilitli |
@@ -527,6 +551,14 @@ Hem BLE Nordic UART hem de HTTP `POST /api/cmd` istekleri tek satırlık, `\n` (
 > **English:** This firmware and its features (such as RF transmission, Wi-Fi deauthentication, packet sniffing, etc.) are developed strictly for educational, testing, and authorized security research purposes. The developers and contributors take no responsibility for any misuse, damage, or legal consequences resulting from illegal operations of this software. Always comply with local radio communication and cybersecurity laws.
 > 
 > **Türkçe:** Bu yazılım ve içerdiği özellikler (RF sinyal gönderimi, Wi-Fi deauth, paket koklama vb.) yalnızca eğitim, test ve yetkili güvenlik araştırmaları amacıyla geliştirilmiştir. Geliştiriciler ve katkıda bulunanlar, bu yazılımın yasal olmayan veya zararlı amaçlarla kullanılmasından ötürü hiçbir sorumluluk veya yasal yükümlülük kabul etmez. Her zaman yerel radyo frekansı ve siber güvenlik yasalarına uyunuz.
+
+## 🤝 Credits & Special Thanks / Katkıda Bulunanlar & Teşekkürler
+
+### English
+* Special thanks to **[@bmorcelli](https://github.com/bmorcelli)** for the excellent Wi-Fi Deauthentication improvements and other invaluable code assistance that significantly enhanced the stability and performance of the Recon service.
+
+### Türkçe
+* Recon servisinin kararlılığını ve performansını önemli ölçüde artıran mükemmel Wi-Fi Deauthentication geliştirmeleri ve diğer değerli kod yardımlarından ötürü **[@bmorcelli](https://github.com/bmorcelli)**'ye teşekkür ederiz.
 
 ---
 

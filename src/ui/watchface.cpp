@@ -77,11 +77,16 @@ void watchface_alarm_get_time(uint8_t *hour, uint8_t *min) {
 
 static void play_alarm_sound(int duration_ms, int freq_hz) {
     instance.powerControl(POWER_SPEAK, true);
-    int sample_rate = 160000;
-    int samples_per_cycle = sample_rate / freq_hz;
-    int half_cycle = samples_per_cycle / 2;
-    if (half_cycle < 1) half_cycle = 1;
     
+    #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5,0,0)
+    // Reconfigure the I2S TX to 44100 Hz, which is a standard rate decoded by MAX98357A.
+    // The default 160kHz in LilyGoLib is not supported by the DAC and causes silence.
+    instance.player.configureTX(44100, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+    const int sample_rate = 44100;
+    #else
+    const int sample_rate = 160000;
+    #endif
+
     int total_samples = (sample_rate * duration_ms) / 1000;
     const int chunk_size = 512;
     int16_t *buf = (int16_t*)malloc(chunk_size * 2 * sizeof(int16_t));
@@ -89,19 +94,32 @@ static void play_alarm_sound(int duration_ms, int freq_hz) {
         instance.powerControl(POWER_SPEAK, false);
         return;
     }
-    
+
+    // Siren parameters: Sweep from 600 Hz to 1800 Hz
+    float f_start = 600.0f;
+    float f_end = 1800.0f;
+    float T = (float)duration_ms / 1000.0f;
+    const float pi = 3.14159265f;
+
     int sample_idx = 0;
     int samples_written = 0;
     while (samples_written < total_samples) {
         int to_write = total_samples - samples_written;
         if (to_write > chunk_size) to_write = chunk_size;
         for (int i = 0; i < to_write; i++) {
-            int16_t val = ((sample_idx / half_cycle) % 2) ? 8000 : -8000;
-            buf[i * 2] = val;
+            float t = (float)sample_idx / sample_rate;
+            // Linear frequency sweep phase: 2 * pi * (f_start * t + 0.5 * (f_end - f_start) * t^2 / T)
+            float phase = 2.0f * pi * (f_start * t + 0.5f * (f_end - f_start) * t * t / T);
+            int16_t val = (int16_t)(sinf(phase) * 25000.0f);
+            buf[i * 2]     = val;
             buf[i * 2 + 1] = val;
             sample_idx++;
         }
+        #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5,0,0)
         instance.player.write(reinterpret_cast<const uint8_t*>(buf), to_write * 2 * sizeof(int16_t));
+        #else
+        instance.player.write(buf, to_write * 2 * sizeof(int16_t));
+        #endif
         samples_written += to_write;
     }
     free(buf);
