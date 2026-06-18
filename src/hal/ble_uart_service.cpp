@@ -1,5 +1,6 @@
 #include "ble_uart_service.h"
 #include <NimBLEDevice.h>
+#include <esp_mac.h>
 #include <LilyGoLib.h>
 #include <cstdio>
 #include <cstring>

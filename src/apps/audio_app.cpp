@@ -1,6 +1,5 @@
 #include "audio_app.h"
 #include <LilyGoLib.h>
-#include <driver/i2s.h>
 #include <cstdio>
 #include <cstring>
 #include "../config.h"
