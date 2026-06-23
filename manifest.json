@@ -1,15 +1,15 @@
 {
   "name": "SCR Terminal (WDGWatch)",
-  "version": "v2.5.4",
+  "version": "v2.5.5",
   "new_install_prompt_erase": true,
   "builds": [
     {
       "chipFamily": "ESP32-S3",
       "parts": [
-        { "path": "firmware/bootloader.bin", "offset": 0 },
-        { "path": "firmware/partitions.bin", "offset": 32768 },
-        { "path": "firmware/boot_app0.bin", "offset": 57344 },
-        { "path": "firmware/firmware.bin", "offset": 65536 }
+        { "path": "https://github.com/sacriphanius/WDGWatch/releases/download/v2.5.5/bootloader.bin", "offset": 0 },
+        { "path": "https://github.com/sacriphanius/WDGWatch/releases/download/v2.5.5/partitions.bin", "offset": 32768 },
+        { "path": "https://github.com/sacriphanius/WDGWatch/releases/download/v2.5.5/boot_app0.bin", "offset": 57344 },
+        { "path": "https://github.com/sacriphanius/WDGWatch/releases/download/v2.5.5/firmware.bin", "offset": 65536 }
       ]
     }
   ]
