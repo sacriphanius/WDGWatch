@@ -1,8 +1,10 @@
 #include "tools_app.h"
 #include <LilyGoLib.h>
 #include <cstdio>
+#include <cmath>
 #include "../config.h"
 #include "../hal/haptic.h"
+#include "../hal/sound_settings.h"
 #include "app_common.h"
 
 static lv_obj_t *scr = nullptr;
@@ -31,7 +33,15 @@ static uint32_t   ct_duration_ms  = 60000;
 static uint32_t   ct_start        = 0;
 static bool       ct_running      = false;
 static bool       ct_finished     = false;
-static bool       flashlight_on   = false;
+
+static int        flashlight_state = 0;
+static lv_timer_t *sos_timer       = nullptr;
+static int        sos_step         = 0;
+static lv_obj_t   *fl_btn_lbl      = nullptr;
+
+static bool       repellent_on     = false;
+static TaskHandle_t repellent_task_handle = nullptr;
+static lv_obj_t   *rep_btn_lbl     = nullptr;
 
 static const uint32_t ct_presets[] = { 1, 3, 5, 10, 15 };
 #define CT_PRESET_COUNT 5
@@ -71,15 +81,96 @@ static void format_mmss(char *buf, size_t sz, uint32_t total_ms) {
     snprintf(buf, sz, "%02lu:%02lu", (unsigned long)m, (unsigned long)s);
 }
 
-static void flashlight_cb(lv_event_t *e) {
-    (void)e;
-    flashlight_on = !flashlight_on;
-    if (flashlight_on) {
+const uint32_t sos_pattern[] = {
+    150, 150, 150, 150, 150, 300,
+    450, 150, 450, 150, 450, 300,
+    150, 150, 150, 150, 150, 1000
+};
+
+static void sos_timer_cb(lv_timer_t *t) {
+    (void)t;
+    bool is_on = (sos_step % 2 == 0);
+    if (is_on) {
         instance.setBrightness(PIPBOY_MAX_BRIGHTNESS);
         lv_obj_set_style_bg_color(scr, lv_color_hex(0xFFFFFF), 0);
     } else {
+        instance.setBrightness(0);
+        lv_obj_set_style_bg_color(scr, BG, 0);
+    }
+    uint32_t next_dur = sos_pattern[sos_step];
+    lv_timer_set_period(t, next_dur);
+    sos_step = (sos_step + 1) % 18;
+}
+
+static void flashlight_cb(lv_event_t *e) {
+    (void)e;
+    flashlight_state = (flashlight_state + 1) % 3;
+    if (sos_timer) {
+        lv_timer_delete(sos_timer);
+        sos_timer = nullptr;
+    }
+    if (flashlight_state == 1) {
+        if (fl_btn_lbl) lv_label_set_text(fl_btn_lbl, "LIGHT: STEADY");
+        instance.setBrightness(PIPBOY_MAX_BRIGHTNESS);
+        lv_obj_set_style_bg_color(scr, lv_color_hex(0xFFFFFF), 0);
+    } else if (flashlight_state == 2) {
+        if (fl_btn_lbl) lv_label_set_text(fl_btn_lbl, "LIGHT: SOS");
+        sos_step = 0;
+        sos_timer = lv_timer_create(sos_timer_cb, 10, nullptr);
+    } else {
+        if (fl_btn_lbl) lv_label_set_text(fl_btn_lbl, "LIGHT: OFF");
         instance.setBrightness(PIPBOY_DEFAULT_BRIGHTNESS);
         lv_obj_set_style_bg_color(scr, BG, 0);
+    }
+}
+
+static void repellent_task(void *pvParameters) {
+    (void)pvParameters;
+    instance.powerControl(POWER_SPEAK, true);
+    instance.player.configureTX(44100, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
+
+    const float f_s = 19000.0f;
+    const float f_e = 21800.0f;
+    const float T_sweep = 0.1f;
+    const float pi = 3.14159265f;
+    const int sample_rate = 44100;
+    const int chunk_samples = 512;
+    int16_t buf[chunk_samples * 2];
+
+    int sample_idx = 0;
+    int sweep_samples = (int)(T_sweep * sample_rate);
+
+    while (repellent_on) {
+        float vol_factor = (float)sound_get_volume() / 100.0f;
+        if (vol_factor < 0.1f) vol_factor = 0.8f;
+
+        for (int i = 0; i < chunk_samples; i++) {
+            float t = (float)(sample_idx % sweep_samples) / sample_rate;
+            float phase = 2.0f * pi * (f_s * t + 0.5f * (f_e - f_s) * t * t / T_sweep);
+            float s = sinf(phase);
+            int16_t val = (int16_t)((s >= 0.0f ? 1.0f : -1.0f) * 32000.0f * vol_factor);
+            buf[i * 2]     = val;
+            buf[i * 2 + 1] = val;
+            sample_idx++;
+        }
+
+        instance.player.write((const uint8_t*)buf, chunk_samples * 4);
+        vTaskDelay(pdMS_TO_TICKS(8));
+    }
+
+    instance.powerControl(POWER_SPEAK, false);
+    repellent_task_handle = nullptr;
+    vTaskDelete(nullptr);
+}
+
+static void repellent_cb(lv_event_t *e) {
+    (void)e;
+    repellent_on = !repellent_on;
+    if (repellent_on) {
+        if (rep_btn_lbl) lv_label_set_text(rep_btn_lbl, "REPELLER: ON");
+        xTaskCreatePinnedToCore(repellent_task, "repellent_task", 4096, nullptr, 5, &repellent_task_handle, 0);
+    } else {
+        if (rep_btn_lbl) lv_label_set_text(rep_btn_lbl, "REPELLER: OFF");
     }
 }
 
@@ -213,12 +304,18 @@ void tools_app_create(lv_obj_t *parent) {
     lv_obj_set_pos(title, CW / 2 - 50, y);
     y += 26;
 
-    lv_obj_t *fl_lbl = make_section_label(scr, "FLASHLIGHT");
+    lv_obj_t *fl_lbl = make_section_label(scr, "FLASHLIGHT & REPELLENT");
     lv_obj_set_pos(fl_lbl, 0, y);
     y += 18;
 
-    lv_obj_t *fl_btn = make_btn(scr, CW / 4 - CW / 8, y, CW / 2, 44,
-                                LV_SYMBOL_EYE_OPEN "  TOGGLE", flashlight_cb);
+    lv_obj_t *fl_btn = make_btn(scr, 0, y, CW / 2 - 5, 44, "LIGHT: OFF", flashlight_cb);
+    fl_btn_lbl = lv_obj_get_child(fl_btn, 0);
+    lv_obj_set_style_text_font(fl_btn_lbl, &lv_font_montserrat_14, 0);
+
+    lv_obj_t *rep_btn = make_btn(scr, CW / 2 + 5, y, CW / 2 - 5, 44, "REPELLER: OFF", repellent_cb);
+    rep_btn_lbl = lv_obj_get_child(rep_btn, 0);
+    lv_obj_set_style_text_font(rep_btn_lbl, &lv_font_montserrat_14, 0);
+
     y += 50;
 
     lv_obj_t *sw_sec = make_section_label(scr, "STOPWATCH");
@@ -266,11 +363,19 @@ void tools_app_create(lv_obj_t *parent) {
 }
 
 void tools_app_destroy(void) {
-
-    if (flashlight_on) {
-        instance.setBrightness(PIPBOY_DEFAULT_BRIGHTNESS);
-        flashlight_on = false;
+    if (sos_timer) {
+        lv_timer_delete(sos_timer);
+        sos_timer = nullptr;
     }
+    if (flashlight_state != 0) {
+        instance.setBrightness(PIPBOY_DEFAULT_BRIGHTNESS);
+        flashlight_state = 0;
+    }
+    if (repellent_on) {
+        repellent_on = false;
+    }
+    repellent_task_handle = nullptr;
+
     sw_running  = false;
     sw_elapsed  = 0;
     ct_running  = false;
@@ -282,5 +387,7 @@ void tools_app_destroy(void) {
     lbl_timer_status = nullptr;
     btn_timer_start  = nullptr;
     btn_timer_reset  = nullptr;
+    fl_btn_lbl       = nullptr;
+    rep_btn_lbl      = nullptr;
     if (scr) { lv_obj_delete(scr); scr = nullptr; }
 }

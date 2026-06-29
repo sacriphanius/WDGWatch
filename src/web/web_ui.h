@@ -475,7 +475,7 @@ function getNeofetchHTML(r) {
   let info = `
     <b><span style="color:#00e5ff;font-size:13px;">root@scr-terminal</span></b><br>
     <span style="color:#007280;">----------------</span><br>
-    <span style="color:#ffaa00;">OS:</span> WDGWatch v0.1.1<br>
+    <span style="color:#ffaa00;">OS:</span> WDGWatch v2.5.6<br>
     <span style="color:#ffaa00;">Kernel:</span> PipBoy-3000<br>
     <span style="color:#ffaa00;">Uptime:</span> ${upStr}<br>
     <span style="color:#ffaa00;">Battery:</span> ${r.bat}% (${r.charging ? 'Charging' : 'Discharging'})<br>
@@ -636,6 +636,7 @@ async function handleGlobalCLI(cmd, args) {
       out += `  eviltwin &lt;ssid&gt; [ch]       Launch Evil Twin portal (eviltwin stop)\n`;
       out += `  arp scan / results         Map active hosts in local subnet\n`;
       out += `  ipsniff &lt;ip&gt; / results     Perform network traffic analysis on IP\n`;
+      out += `  ip_trc &lt;target&gt;            Perform Geo-IP details lookup & port scan on target\n`;
       out += `  beaconspam &lt;ssids&gt;         Flood area with fake SSIDs (beaconspam stop)\n`;
       out += `  adsb start &lt;lat&gt; &lt;lon&gt;     Track aircraft within vicinity\n`;
       out += `  adsb status                Get detected aircraft stats\n`;
@@ -730,7 +731,7 @@ async function handleGlobalCLI(cmd, args) {
     
     out += `<span style="color:#00e5ff;font-weight:bold;">Recon & Radio:</span>\n`;
     out += `  deauth &lt;bssid&gt; &lt;ch&gt; | blackout | sniffer &lt;ch&gt; | deauth detect\n`;
-    out += `  eviltwin &lt;ssid&gt; [ch] | arp scan/results | ipsniff &lt;ip&gt; / results\n`;
+    out += `  eviltwin &lt;ssid&gt; [ch] | arp scan/results | ipsniff &lt;ip&gt; / results | ip_trc &lt;target&gt;\n`;
     out += `  beaconspam &lt;ssid1,ssid2&gt; | adsb start/status | rf jam &lt;hz&gt; [dur] | tesla\n\n`;
     
     out += `<span style="color:#00e5ff;font-weight:bold;">HID & BadUSB:</span>\n`;
@@ -991,6 +992,38 @@ async function handleMenuCLI(menu, args) {
       } else {
         await api('/api/cmd', 'POST', {cmd: 'recon_ip_sniff', params: {ip: act}});
         termPrint(`IP Sniffer target set to ${act}. dynamical PCAP recording started.`, 'success');
+      }
+    } else if (sub === 'ip_trc' || sub === 'trace') {
+      let target = subArgs[0];
+      if (!target) { termPrint("Usage: recon ip_trc <ip_or_domain>", 'error'); return; }
+      termPrint(`Running IP TRC on ${target}... (Please wait, port scanning common ports)`, 'info');
+      let r = await api('/api/cmd', 'POST', {cmd: 'recon_ip_trc', params: {target: target}});
+      if (r && r.ok) {
+        let out = `\n<span style="color:#00ff66;font-weight:bold;">[ IP TRC RESULTS ]</span>\n`;
+        out += `  Target:      ${r.target}\n`;
+        out += `  Resolved IP: ${r.resolved_ip} (${r.type})\n`;
+        out += `  Geo-IP Loc:  ${r.city}, ${r.country}\n`;
+        out += `  Coordinates: Latitude: ${r.lat}, Longitude: ${r.lon}\n`;
+        out += `  ISP / ASN:   ${r.isp} / ${r.as}\n`;
+        if (r.csv_saved) {
+          out += `  Saved to SD: ${r.csv_saved}\n`;
+        }
+        out += `\n<span style="color:#ffaa00;font-weight:bold;">  [ PORT SCAN RESULTS ]</span>\n`;
+        if (r.ports && r.ports.length > 0) {
+          let openPorts = r.ports.filter(p => p.status === 'OPEN').map(p => p.port);
+          if (openPorts.length > 0) {
+            out += `    Open Ports:   <span style="color:#00ff66;font-weight:bold;">${openPorts.join(', ')}</span>\n`;
+          } else {
+            out += `    Open Ports:   None detected\n`;
+          }
+          let closedPorts = r.ports.filter(p => p.status === 'CLOSED').map(p => p.port);
+          out += `    Closed Ports: ${closedPorts.join(', ')}\n`;
+        } else {
+          out += `    No port scan results.\n`;
+        }
+        termPrint(out + "\n", 'normal');
+      } else {
+        termPrint(`IP TRC failed: ${r ? r.error : 'No response'}`, 'error');
       }
     } else {
       termPrint(`Unknown recon command: ${sub}`, 'error');

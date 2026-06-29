@@ -79,12 +79,10 @@ void watchface_alarm_get_time(uint8_t *hour, uint8_t *min) {
     if (min) *min = alarm_min;
 }
 
-static void play_alarm_sound(int duration_ms, int freq_hz) {
+static void play_alarm_sound(int duration_ms, int freq_start, int freq_end = -1) {
     instance.powerControl(POWER_SPEAK, true);
-    
+
     #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5,0,0)
-    
-    
     instance.player.configureTX(44100, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO);
     const int sample_rate = 44100;
     #else
@@ -99,10 +97,9 @@ static void play_alarm_sound(int duration_ms, int freq_hz) {
         return;
     }
 
-    
-    float f_start = 600.0f;
-    float f_end = 1800.0f;
-    float T = (float)duration_ms / 1000.0f;
+    float f_s = (float)freq_start;
+    float f_e = (freq_end >= 0) ? (float)freq_end : f_s;
+    float T   = (float)duration_ms / 1000.0f;
     const float pi = 3.14159265f;
 
     int sample_idx = 0;
@@ -113,9 +110,11 @@ static void play_alarm_sound(int duration_ms, int freq_hz) {
         float vol_factor = (float)sound_get_volume() / 100.0f;
         for (int i = 0; i < to_write; i++) {
             float t = (float)sample_idx / sample_rate;
-            
-            float phase = 2.0f * pi * (f_start * t + 0.5f * (f_end - f_start) * t * t / T);
-            int16_t val = (int16_t)(sinf(phase) * 25000.0f * vol_factor);
+            float phase = (T > 0.0f)
+                ? 2.0f * pi * (f_s * t + 0.5f * (f_e - f_s) * t * t / T)
+                : 2.0f * pi * f_s * t;
+            float s = sinf(phase);
+            int16_t val = (int16_t)((s >= 0.0f ? 1.0f : -1.0f) * 32000.0f * vol_factor);
             buf[i * 2]     = val;
             buf[i * 2 + 1] = val;
             sample_idx++;
@@ -145,11 +144,19 @@ static void dismiss_alarm_cb(lv_event_t *e) {
     app_manager_show(APP_WATCHFACE);
 }
 
+static int biohazard_phase = 0;
+
 static void alarm_timer_cb(lv_timer_t *t) {
     if (!alarm_active_ringing) return;
     haptic_alarm();
-    play_alarm_sound(150, 1000);
-    
+    switch (biohazard_phase % 4) {
+        case 0: play_alarm_sound(300, 800, 300); break;
+        case 1: play_alarm_sound(200, 300);      break;
+        case 2: play_alarm_sound(300, 300, 800); break;
+        case 3: play_alarm_sound(200, 800);      break;
+    }
+    biohazard_phase++;
+
     bell_flash_state = !bell_flash_state;
     if (alarm_ring_bell) {
         lv_obj_set_style_text_color(alarm_ring_bell, bell_flash_state ? G : DK, 0);
@@ -228,7 +235,8 @@ static void trigger_alarm(void) {
         lv_obj_add_event_cb(ring_btns[i], ring_btn_click_cb, LV_EVENT_CLICKED, nullptr);
     }
     
-    alarm_timer = lv_timer_create(alarm_timer_cb, 1000, nullptr);
+    biohazard_phase = 0;
+    alarm_timer = lv_timer_create(alarm_timer_cb, 250, nullptr);
 }
 
 static void hour_up_cb(lv_event_t *e) {

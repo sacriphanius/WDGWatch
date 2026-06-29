@@ -224,23 +224,7 @@ void gps_app_update(void) {
     snprintf(b, sizeof(b), "%.1f", instance.gps.hdop.hdop());
     lv_label_set_text(lbl_hdop, b);
 
-    if (wardriving_active && has_location && instance.gps.location.isUpdated()) {
-        char buf[256];
-        snprintf(buf, sizeof(buf),
-                 "%04d-%02d-%02d,%02d:%02d:%02d,%.6f,%.6f,%.1f,%.1f,%.1f,%d,%.1f\n",
-                 instance.gps.date.year(), instance.gps.date.month(), instance.gps.date.day(),
-                 instance.gps.time.hour(), instance.gps.time.minute(), instance.gps.time.second(),
-                 instance.gps.location.lat(), instance.gps.location.lng(),
-                 instance.gps.altitude.meters(), instance.gps.speed.kmph(),
-                 instance.gps.course.deg(), instance.gps.satellites.value(),
-                 instance.gps.hdop.hdop());
 
-        File f = SD.open(wardriving_filepath, FILE_APPEND);
-        if (f) {
-            f.print(buf);
-            f.close();
-        }
-    }
 
     static uint32_t last_print = 0;
     if (millis() - last_print > 5000) {
@@ -323,6 +307,28 @@ void gps_app_set_wardriving(bool active) {
         lv_obj_t *lbl = lv_obj_get_child(btn_wardriving, 0);
         if (lbl) {
             lv_label_set_text(lbl, "WARDRIVING");
+        }
+    }
+}
+
+void gps_app_background_update(void) {
+    if (!gps_enabled || !wardriving_active) return;
+    if (instance.gps.location.isValid() && instance.gps.location.isUpdated()) {
+        char buf[256];
+        snprintf(buf, sizeof(buf),
+                 "%04d-%02d-%02d,%02d:%02d:%02d,%.6f,%.6f,%.1f,%.1f,%.1f,%d,%.1f\n",
+                 instance.gps.date.year(), instance.gps.date.month(), instance.gps.date.day(),
+                 instance.gps.time.hour(), instance.gps.time.minute(), instance.gps.time.second(),
+                 instance.gps.location.lat(), instance.gps.location.lng(),
+                 instance.gps.altitude.meters(), instance.gps.speed.kmph(),
+                 instance.gps.course.deg(), instance.gps.satellites.value(),
+                 instance.gps.hdop.hdop());
+
+        File f = SD.open(wardriving_filepath, FILE_APPEND);
+        if (f) {
+            f.print(buf);
+            f.close();
+            Serial.printf("[GPS] Background Wardriving: logged coordinates to %s\n", wardriving_filepath.c_str());
         }
     }
 }

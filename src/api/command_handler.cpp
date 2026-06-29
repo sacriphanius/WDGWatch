@@ -4,6 +4,7 @@
 #include <FS.h>
 #include <SD.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
 #include <mbedtls/base64.h>
 #include "../config.h"
 #include "../hal/power_hal.h"
@@ -63,7 +64,7 @@ static char* cmd_status(void) {
 
 static char* cmd_version(void) {
     char *buf = (char*)malloc(192);
-    snprintf(buf, 192, "{\"version\":\"WDGWatch v0.1.1\",\"codename\":\"SCR Terminal\",\"hw\":\"T-Watch Ultra ESP32-S3\",\"features\":[\"nfc\",\"lora\",\"gps\",\"recon\",\"compass\"]}");
+    snprintf(buf, 192, "{\"version\":\"WDGWatch v2.5.6\",\"codename\":\"SCR Terminal\",\"hw\":\"T-Watch Ultra ESP32-S3\",\"features\":[\"nfc\",\"lora\",\"gps\",\"recon\",\"compass\"]}");
     return buf;
 }
 
@@ -295,6 +296,143 @@ static char* cmd_recon_beacon_spam(JsonArray ssids) {
     }
     recon_request_beacon_spam(ssid_array, count);
     return strdup("{\"ok\":true,\"msg\":\"beacon spam started\"}");
+}
+
+static char* cmd_recon_ip_trc(const char *target) {
+    if (!target || strlen(target) == 0) {
+        return strdup("{\"error\":\"target is empty\"}");
+    }
+    IPAddress ip_addr;
+    String target_ip = target;
+    if (!WiFi.hostByName(target, ip_addr)) {
+        if (ip_addr.fromString(target)) {
+            target_ip = target;
+        } else {
+            return strdup("{\"error\":\"dns resolution failed\"}");
+        }
+    } else {
+        target_ip = ip_addr.toString();
+    }
+
+    auto is_local = [](const String& ip) -> bool {
+        if (ip.startsWith("192.168.")) return true;
+        if (ip.startsWith("10."))      return true;
+        if (ip.startsWith("127."))     return true;
+        if (ip.startsWith("172.")) {
+            int dot = ip.indexOf('.', 4);
+            if (dot != -1) {
+                int sec = ip.substring(4, dot).toInt();
+                if (sec >= 16 && sec <= 31) return true;
+            }
+        }
+        return false;
+    };
+
+    bool local = is_local(target_ip);
+    String country = "N/A", city = "N/A", isp = "N/A", asn = "N/A", lat = "N/A", lon = "N/A";
+
+    if (!local) {
+        if (WiFi.status() == WL_CONNECTED) {
+            HTTPClient http;
+            http.begin("http://ip-api.com/json/" + target_ip);
+            http.setTimeout(4000);
+            int code = http.GET();
+            if (code == 200) {
+                String resp = http.getString();
+                auto get_val = [&](const String& key) -> String {
+                    int k_idx = resp.indexOf("\"" + key + "\":");
+                    if (k_idx == -1) return "N/A";
+                    int v_idx = k_idx + key.length() + 3;
+                    if (resp[v_idx] == '"') {
+                        v_idx++;
+                        int end_idx = resp.indexOf('"', v_idx);
+                        return resp.substring(v_idx, end_idx);
+                    } else {
+                        int end_idx = resp.indexOf(',', v_idx);
+                        if (end_idx == -1) end_idx = resp.indexOf('}', v_idx);
+                        return resp.substring(v_idx, end_idx);
+                    }
+                };
+                country = get_val("country");
+                city = get_val("city");
+                isp = get_val("isp");
+                asn = get_val("as");
+                lat = get_val("lat");
+                lon = get_val("lon");
+            }
+            http.end();
+        }
+    }
+
+    JsonDocument doc;
+    doc["ok"] = true;
+    doc["target"] = target;
+    doc["resolved_ip"] = target_ip;
+    doc["type"] = local ? "LOCAL" : "EXTERNAL";
+    doc["country"] = country;
+    doc["city"] = city;
+    doc["isp"] = isp;
+    doc["as"] = asn;
+    doc["lat"] = lat;
+    doc["lon"] = lon;
+
+    JsonArray ports_arr = doc["ports"].to<JsonArray>();
+    const int common_ports[] = {21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 8080, 8443};
+    int num_ports = sizeof(common_ports) / sizeof(common_ports[0]);
+    int timeout = local ? 100 : 300;
+
+    String csv_data = "Field,Value\n";
+    csv_data += "Target Input," + String(target) + "\n";
+    csv_data += "Resolved IP," + target_ip + "\n";
+    csv_data += "Type," + String(local ? "LOCAL" : "EXTERNAL") + "\n";
+    csv_data += "Country," + country + "\n";
+    csv_data += "City," + city + "\n";
+    csv_data += "ISP," + isp + "\n";
+    csv_data += "ASN," + asn + "\n";
+    csv_data += "Latitude," + lat + "\n";
+    csv_data += "Longitude," + lon + "\n\n";
+    csv_data += "Port,Status\n";
+
+    for (int i = 0; i < num_ports; i++) {
+        int port = common_ports[i];
+        WiFiClient client;
+        client.setTimeout(timeout / 1000 == 0 ? 1 : timeout / 1000);
+        bool connected = false;
+        if (client.connect(target_ip.c_str(), port)) {
+            connected = true;
+            client.stop();
+        }
+        JsonObject p_obj = ports_arr.add<JsonObject>();
+        p_obj["port"] = port;
+        p_obj["status"] = connected ? "OPEN" : "CLOSED";
+        csv_data += String(port) + "," + String(connected ? "OPEN" : "CLOSED") + "\n";
+    }
+
+    if (!SD.exists("/iptracer")) {
+        SD.mkdir("/iptracer");
+    }
+    int idx = 1;
+    char path[64];
+    while (idx < 9999) {
+        snprintf(path, sizeof(path), "/iptracer/tracing_%d.csv", idx);
+        if (!SD.exists(path)) break;
+        idx++;
+    }
+    File f = SD.open(path, FILE_WRITE);
+    if (f) {
+        f.print(csv_data);
+        f.close();
+        doc["csv_saved"] = path;
+    } else {
+        doc["csv_saved"] = "failed_to_write";
+    }
+
+    char *buf = (char*)malloc(3072);
+    if (buf) {
+        serializeJson(doc, buf, 3072);
+        return buf;
+    }
+    return strdup("{\"error\":\"out of memory\"}");
 }
 
 static char* cmd_recon_adsb_start(double lat, double lon, const char *name) {
@@ -603,6 +741,7 @@ static char* cmd_help(void) {
     recon.add("recon_wifi"); recon.add("recon_ble"); recon.add("recon_stop"); recon.add("recon_deauth");
     recon.add("recon_results"); recon.add("deauth_all"); recon.add("sniffer_start"); recon.add("sniffer_stop");
     recon.add("deauth_detect"); recon.add("evil_twin"); recon.add("evil_twin_stop");
+    recon.add("recon_ip_trc");
 
     JsonArray rf = cats["rf"].to<JsonArray>();
     rf.add("rf_jammer_start"); rf.add("rf_jammer_stop"); rf.add("rf_tesla_send"); rf.add("rf_status");
@@ -688,6 +827,7 @@ char* api_handle_command(const char *json_cmd) {
     if (strcmp(cmd, "recon_ip_sniff") == 0) return cmd_recon_ip_sniff(doc["params"]["ip"] | "");
     if (strcmp(cmd, "recon_ip_sniff_results") == 0) return cmd_recon_ip_sniff_results();
     if (strcmp(cmd, "recon_beacon_spam") == 0) return cmd_recon_beacon_spam(doc["params"]["ssids"].as<JsonArray>());
+    if (strcmp(cmd, "recon_ip_trc") == 0 || strcmp(cmd, "ip_trc") == 0) return cmd_recon_ip_trc(doc["params"]["target"] | "");
     if (strcmp(cmd, "recon_adsb_start") == 0) return cmd_recon_adsb_start(doc["params"]["lat"] | 0.0, doc["params"]["lon"] | 0.0, doc["params"]["name"] | "");
     if (strcmp(cmd, "recon_adsb_status") == 0) return cmd_recon_adsb_status();
 

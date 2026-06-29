@@ -15,9 +15,20 @@
 #include "app_common.h"
 #include <Preferences.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
 #include "../web/web_server.h"
 
 static void led_restore_wifi_state();
+
+// ── IP TRC state ─────────────────────────────────────────────────────────────
+static lv_obj_t  *ip_trc_input_modal  = nullptr;
+static lv_obj_t  *ip_trc_result_modal = nullptr;
+static lv_obj_t  *ip_trc_ta           = nullptr;
+static lv_obj_t  *ip_trc_ip_bar_lbl   = nullptr;
+static lv_obj_t  *ip_trc_status_lbl   = nullptr;
+static String     ip_trc_csv          = "";
+static bool       ip_trc_wifi_we_connected = false;
+// ─────────────────────────────────────────────────────────────────────────────
 
 static lv_obj_t *scr = nullptr;
 static lv_obj_t *lbl_status = nullptr;
@@ -1674,6 +1685,452 @@ static void led_close_cb(lv_event_t* e) {
     }
 }
 
+// ── IP TRC IMPLEMENTATION ───────────────────────────────────────────────────
+static void ip_trc_cleanup(void) {
+    if (ip_trc_input_modal)  { lv_obj_delete(ip_trc_input_modal);  ip_trc_input_modal = nullptr; }
+    if (ip_trc_result_modal) { lv_obj_delete(ip_trc_result_modal); ip_trc_result_modal = nullptr; }
+    ip_trc_ta = nullptr;
+    ip_trc_ip_bar_lbl = nullptr;
+    ip_trc_status_lbl = nullptr;
+    ip_trc_csv = "";
+}
+
+static void ip_trc_close_cb(lv_event_t *e) {
+    (void)e;
+    haptic_click();
+    ip_trc_cleanup();
+}
+
+static bool ip_trc_ensure_wifi(lv_obj_t* status_lbl) {
+    if (WiFi.status() == WL_CONNECTED) {
+        ip_trc_wifi_we_connected = false;
+        return true;
+    }
+    if (status_lbl) {
+        lv_label_set_text(status_lbl, "LOC: Scan WiFi networks... EXT: ...");
+        lv_timer_handler();
+    }
+    time_sync_load_networks();
+    int count = time_sync_get_saved_network_count();
+    WiFi.mode(WIFI_STA);
+    int n = WiFi.scanNetworks();
+    for (int i = 0; i < n; i++) {
+        String s = WiFi.SSID(i);
+        for (int j = 0; j < count; j++) {
+            String ssid, pwd; bool hidden;
+            if (time_sync_get_saved_network(j, ssid, pwd, hidden) && s == ssid) {
+                if (status_lbl) {
+                    lv_label_set_text(status_lbl, ("LOC: Connect to " + ssid + "... EXT: ...").c_str());
+                    lv_timer_handler();
+                }
+                WiFi.begin(ssid.c_str(), pwd.c_str());
+                uint32_t t = millis();
+                while (WiFi.status() != WL_CONNECTED && millis() - t < 8000) {
+                    if (status_lbl) {
+                        char dots[16] = "";
+                        int sec = (millis() - t) / 500;
+                        for (int k = 0; k < (sec % 4); k++) strcat(dots, ".");
+                        lv_label_set_text(status_lbl, ("LOC: Connecting " + ssid + dots + " EXT: ...").c_str());
+                        lv_timer_handler();
+                    }
+                    delay(100);
+                }
+                if (WiFi.status() == WL_CONNECTED) {
+                    ip_trc_wifi_we_connected = true;
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+static String ip_trc_get_next_filename() {
+    if (!SD.exists("/iptracer")) {
+        SD.mkdir("/iptracer");
+    }
+    int idx = 1;
+    char path[64];
+    while (idx < 9999) {
+        snprintf(path, sizeof(path), "/iptracer/tracing_%d.csv", idx);
+        if (!SD.exists(path)) break;
+        idx++;
+    }
+    return String(path);
+}
+
+static void ip_trc_save_cb(lv_event_t *e) {
+    haptic_click();
+    if (ip_trc_csv.length() == 0) return;
+    String path = ip_trc_get_next_filename();
+    File f = SD.open(path.c_str(), FILE_WRITE);
+    if (!f) {
+        if (ip_trc_status_lbl) lv_label_set_text(ip_trc_status_lbl, "SD WRITE ERROR");
+        return;
+    }
+    f.print(ip_trc_csv);
+    f.close();
+
+    lv_obj_t* btn = (lv_obj_t*)lv_event_get_target(e);
+    lv_obj_t* lbl = lv_obj_get_child(btn, 0);
+    String fname = path.substring(path.lastIndexOf('/') + 1);
+    char msg[32];
+    snprintf(msg, sizeof(msg), LV_SYMBOL_OK " %s", fname.c_str());
+    if (lbl) lv_label_set_text(lbl, msg);
+    lv_obj_clear_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_border_color(btn, lv_color_hex(0x00AA44), 0);
+}
+
+static bool is_local_ip(const String& ip) {
+    if (ip.startsWith("192.168.")) return true;
+    if (ip.startsWith("10."))      return true;
+    if (ip.startsWith("127."))     return true;
+    if (ip.startsWith("172.")) {
+        int dot = ip.indexOf('.', 4);
+        if (dot != -1) {
+            int second = ip.substring(4, dot).toInt();
+            return (second >= 16 && second <= 31);
+        }
+    }
+    return false;
+}
+
+static void ip_trc_start_trace(void) {
+    if (!ip_trc_ta) return;
+    String input = lv_textarea_get_text(ip_trc_ta);
+    input.trim();
+    if (input.length() == 0) return;
+
+    if (ip_trc_status_lbl) {
+        lv_label_set_text(ip_trc_status_lbl, "GETTING IP INFO. PLEASE WAIT...");
+        lv_timer_handler();
+    }
+
+    IPAddress ip_addr;
+    String target_ip = input;
+    if (!WiFi.hostByName(input.c_str(), ip_addr)) {
+        if (ip_addr.fromString(input)) {
+            target_ip = input;
+        } else {
+            if (ip_trc_status_lbl) {
+                lv_label_set_text(ip_trc_status_lbl, "DNS Resolution Failed!");
+                lv_timer_handler();
+            }
+            if (lbl_status) lv_label_set_text(lbl_status, "DNS Resolution Failed");
+            return;
+        }
+    } else {
+        target_ip = ip_addr.toString();
+    }
+
+    bool local = is_local_ip(target_ip);
+    String country = "N/A", city = "N/A", isp = "N/A", asn = "N/A", lat = "N/A", lon = "N/A";
+
+    if (!local) {
+        if (WiFi.status() == WL_CONNECTED) {
+            if (ip_trc_status_lbl) {
+                lv_label_set_text(ip_trc_status_lbl, "QUERYING GEO-IP DATA...");
+                lv_timer_handler();
+            }
+
+            HTTPClient http;
+            http.begin("http://ip-api.com/json/" + target_ip);
+            http.setTimeout(4000);
+            int code = http.GET();
+            if (code == 200) {
+                String resp = http.getString();
+                auto get_val = [&](const String& key) -> String {
+                    int k_idx = resp.indexOf("\"" + key + "\":");
+                    if (k_idx == -1) return "N/A";
+                    int v_idx = k_idx + key.length() + 3;
+                    if (resp[v_idx] == '"') {
+                        v_idx++;
+                        int end_idx = resp.indexOf('"', v_idx);
+                        return resp.substring(v_idx, end_idx);
+                    } else {
+                        int end_idx = resp.indexOf(',', v_idx);
+                        if (end_idx == -1) end_idx = resp.indexOf('}', v_idx);
+                        return resp.substring(v_idx, end_idx);
+                    }
+                };
+                country = get_val("country");
+                city = get_val("city");
+                isp = get_val("isp");
+                asn = get_val("as");
+                lat = get_val("lat");
+                lon = get_val("lon");
+            }
+            http.end();
+        }
+    }
+
+    lv_obj_t* loader = lv_obj_create(scr);
+    lv_obj_set_size(loader, 390, 440);
+    lv_obj_align(loader, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(loader, BG, 0);
+    lv_obj_set_style_border_color(loader, G, 0);
+    lv_obj_set_style_border_width(loader, 2, 0);
+    lv_obj_set_style_radius(loader, 0, 0);
+    
+    lv_obj_t* l_lbl = lv_label_create(loader);
+    lv_label_set_text(l_lbl, "STARTING PORT SCAN...");
+    lv_obj_set_style_text_color(l_lbl, G, 0);
+    lv_obj_set_style_text_font(l_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_align(l_lbl, LV_ALIGN_CENTER, 0, -20);
+    lv_timer_handler();
+
+    ip_trc_csv = "Field,Value\n";
+    ip_trc_csv += "Target Input," + input + "\n";
+    ip_trc_csv += "Resolved IP," + target_ip + "\n";
+    ip_trc_csv += "Type," + String(local ? "LOCAL" : "EXTERNAL") + "\n";
+    ip_trc_csv += "Country," + country + "\n";
+    ip_trc_csv += "City," + city + "\n";
+    ip_trc_csv += "ISP," + isp + "\n";
+    ip_trc_csv += "ASN," + asn + "\n";
+    ip_trc_csv += "Latitude," + lat + "\n";
+    ip_trc_csv += "Longitude," + lon + "\n\n";
+
+    String result_text = "";
+    result_text += "IP: " + target_ip + "\n";
+    if (!local) {
+        result_text += "Country: " + country + "\n";
+        result_text += "City: " + city + "\n";
+        result_text += "ISP: " + isp + "\n";
+        result_text += "AS: " + asn + "\n";
+        result_text += "Lat/Lon: " + lat + " / " + lon + "\n";
+    } else {
+        result_text += "Network: Local LAN\n";
+    }
+    result_text += "\n[ PORT SCAN ]\n";
+
+    const int common_ports[] = {21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 8080, 8443};
+    int num_ports = sizeof(common_ports) / sizeof(common_ports[0]);
+    int timeout = local ? 100 : 300;
+
+    ip_trc_csv += "Port,Status\n";
+
+    for (int i = 0; i < num_ports; i++) {
+        int port = common_ports[i];
+        
+        lv_label_set_text(l_lbl, ("Scanning ports on " + target_ip + "...\n" + "Port " + String(port) + " (" + String(i + 1) + "/" + String(num_ports) + ")").c_str());
+        lv_timer_handler();
+
+        WiFiClient client;
+        client.setTimeout(timeout / 1000 == 0 ? 1 : timeout / 1000);
+        bool connected = false;
+        if (client.connect(target_ip.c_str(), port)) {
+            connected = true;
+            client.stop();
+        }
+        
+        result_text += "PORT " + String(port) + ": " + String(connected ? "OPEN" : "CLOSED") + "\n";
+        ip_trc_csv += String(port) + "," + String(connected ? "OPEN" : "CLOSED") + "\n";
+    }
+
+    lv_obj_delete(loader);
+    ip_trc_cleanup();
+
+    ip_trc_result_modal = lv_obj_create(scr);
+    lv_obj_set_size(ip_trc_result_modal, 390, 440);
+    lv_obj_align(ip_trc_result_modal, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(ip_trc_result_modal, BG, 0);
+    lv_obj_set_style_border_color(ip_trc_result_modal, G, 0);
+    lv_obj_set_style_border_width(ip_trc_result_modal, 2, 0);
+    lv_obj_set_style_radius(ip_trc_result_modal, 0, 0);
+
+    lv_obj_t* r_title = lv_label_create(ip_trc_result_modal);
+    lv_label_set_text(r_title, "[ IP TRC RESULT ]");
+    lv_obj_set_style_text_color(r_title, G, 0);
+    lv_obj_set_style_text_font(r_title, &lv_font_montserrat_18, 0);
+    lv_obj_align(r_title, LV_ALIGN_TOP_MID, 0, -10);
+
+    lv_obj_t *btn_cls = lv_button_create(ip_trc_result_modal);
+    lv_obj_set_size(btn_cls, 40, 30);
+    lv_obj_align(btn_cls, LV_ALIGN_TOP_RIGHT, 5, -15);
+    lv_obj_set_style_bg_color(btn_cls, BG, 0);
+    lv_obj_set_style_border_color(btn_cls, lv_color_hex(0xFF3300), 0);
+    lv_obj_set_style_border_width(btn_cls, 1, 0);
+    lv_obj_set_style_radius(btn_cls, 0, 0);
+    lv_obj_add_event_cb(btn_cls, ip_trc_close_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *lbl_x = lv_label_create(btn_cls);
+    lv_label_set_text(lbl_x, LV_SYMBOL_CLOSE);
+    lv_obj_set_style_text_color(lbl_x, lv_color_hex(0xFF3300), 0);
+    lv_obj_center(lbl_x);
+
+    lv_obj_t* panel = lv_obj_create(ip_trc_result_modal);
+    lv_obj_set_size(panel, 350, 310);
+    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 25);
+    lv_obj_set_style_bg_color(panel, BG, 0);
+    lv_obj_set_style_border_width(panel, 0, 0);
+    lv_obj_set_scrollbar_mode(panel, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_scroll_dir(panel, LV_DIR_VER);
+
+    lv_obj_t* r_text = lv_label_create(panel);
+    lv_label_set_text(r_text, result_text.c_str());
+    lv_obj_set_style_text_color(r_text, D, 0);
+    lv_obj_set_style_text_font(r_text, &lv_font_montserrat_16, 0);
+    lv_obj_set_width(r_text, 330);
+    lv_label_set_long_mode(r_text, LV_LABEL_LONG_WRAP);
+
+    lv_obj_t* btn_save = lv_button_create(ip_trc_result_modal);
+    lv_obj_set_size(btn_save, 160, 40);
+    lv_obj_align(btn_save, LV_ALIGN_BOTTOM_LEFT, 10, -5);
+    lv_obj_set_style_bg_color(btn_save, BG, 0);
+    lv_obj_set_style_border_color(btn_save, G, 0);
+    lv_obj_set_style_border_width(btn_save, 1, 0);
+    lv_obj_set_style_radius(btn_save, 0, 0);
+    lv_obj_add_event_cb(btn_save, ip_trc_save_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* lbl_save = lv_label_create(btn_save);
+    lv_label_set_text(lbl_save, LV_SYMBOL_SAVE " SAVE CSV");
+    lv_obj_set_style_text_color(lbl_save, G, 0);
+    lv_obj_center(lbl_save);
+
+    lv_obj_t* btn_close2 = lv_button_create(ip_trc_result_modal);
+    lv_obj_set_size(btn_close2, 160, 40);
+    lv_obj_align(btn_close2, LV_ALIGN_BOTTOM_RIGHT, -10, -5);
+    lv_obj_set_style_bg_color(btn_close2, BG, 0);
+    lv_obj_set_style_border_color(btn_close2, lv_color_hex(0xFF3300), 0);
+    lv_obj_set_style_border_width(btn_close2, 1, 0);
+    lv_obj_set_style_radius(btn_close2, 0, 0);
+    lv_obj_add_event_cb(btn_close2, ip_trc_close_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* lbl_close2 = lv_label_create(btn_close2);
+    lv_label_set_text(lbl_close2, "CLOSE");
+    lv_obj_set_style_text_color(lbl_close2, lv_color_hex(0xFF3300), 0);
+    lv_obj_center(lbl_close2);
+
+    haptic_success();
+}
+
+static void ip_trc_btn_cb(lv_event_t* e) {
+    (void)e;
+    haptic_click();
+
+    if (recon_is_scanning() || recon_is_deauthing() || recon_is_deauth_detecting()) {
+        if (lbl_status) {
+            lv_label_set_text(lbl_status, "STOP Recon WiFi first!");
+            lv_obj_set_style_text_color(lbl_status, lv_color_hex(0xFF3300), 0);
+        }
+        return;
+    }
+
+    if (ip_trc_input_modal) return;
+
+    ip_trc_input_modal = lv_obj_create(scr);
+    lv_obj_set_size(ip_trc_input_modal, 390, 440);
+    lv_obj_align(ip_trc_input_modal, LV_ALIGN_CENTER, 0, 0);
+    lv_obj_set_style_bg_color(ip_trc_input_modal, BG, 0);
+    lv_obj_set_style_border_color(ip_trc_input_modal, G, 0);
+    lv_obj_set_style_border_width(ip_trc_input_modal, 2, 0);
+    lv_obj_set_style_radius(ip_trc_input_modal, 0, 0);
+    lv_obj_clear_flag(ip_trc_input_modal, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* title = lv_label_create(ip_trc_input_modal);
+    lv_label_set_text(title, "[ IP TRACER & SCANNER ]");
+    lv_obj_set_style_text_color(title, G, 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, -10);
+
+    lv_obj_t *btn_cls = lv_button_create(ip_trc_input_modal);
+    lv_obj_set_size(btn_cls, 40, 30);
+    lv_obj_align(btn_cls, LV_ALIGN_TOP_RIGHT, 5, -15);
+    lv_obj_set_style_bg_color(btn_cls, BG, 0);
+    lv_obj_set_style_border_color(btn_cls, lv_color_hex(0xFF3300), 0);
+    lv_obj_set_style_border_width(btn_cls, 1, 0);
+    lv_obj_set_style_radius(btn_cls, 0, 0);
+    lv_obj_add_event_cb(btn_cls, ip_trc_close_cb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t *lbl_x = lv_label_create(btn_cls);
+    lv_label_set_text(lbl_x, LV_SYMBOL_CLOSE);
+    lv_obj_set_style_text_color(lbl_x, lv_color_hex(0xFF3300), 0);
+    lv_obj_center(lbl_x);
+
+    ip_trc_ip_bar_lbl = lv_label_create(ip_trc_input_modal);
+    lv_obj_set_style_text_color(ip_trc_ip_bar_lbl, D, 0);
+    lv_obj_set_style_text_font(ip_trc_ip_bar_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(ip_trc_ip_bar_lbl, LV_ALIGN_TOP_LEFT, 10, 20);
+
+    lv_label_set_text(ip_trc_ip_bar_lbl, "LOC: Connecting WiFi... EXT: ...");
+    lv_timer_handler();
+
+    ip_trc_ensure_wifi(ip_trc_ip_bar_lbl);
+
+    String local_ip = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "DISCONNECTED";
+    lv_label_set_text(ip_trc_ip_bar_lbl, ("LOC: " + local_ip + "  EXT: ...").c_str());
+    lv_timer_handler();
+
+    ip_trc_ta = lv_textarea_create(ip_trc_input_modal);
+    lv_textarea_set_one_line(ip_trc_ta, true);
+    lv_textarea_set_placeholder_text(ip_trc_ta, "Enter IP or URL");
+    lv_obj_set_size(ip_trc_ta, 350, 40);
+    lv_obj_align(ip_trc_ta, LV_ALIGN_TOP_MID, 0, 45);
+    lv_obj_set_style_bg_color(ip_trc_ta, BG, 0);
+    lv_obj_set_style_border_color(ip_trc_ta, G, 0);
+    lv_obj_set_style_border_width(ip_trc_ta, 1, 0);
+    lv_obj_set_style_text_color(ip_trc_ta, G, 0);
+    lv_obj_set_style_text_font(ip_trc_ta, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_radius(ip_trc_ta, 0, 0);
+
+    ip_trc_status_lbl = lv_label_create(ip_trc_input_modal);
+    lv_label_set_text(ip_trc_status_lbl, "");
+    lv_obj_set_style_text_color(ip_trc_status_lbl, lv_color_hex(0xFF8800), 0);
+    lv_obj_set_style_text_font(ip_trc_status_lbl, &lv_font_montserrat_14, 0);
+    lv_obj_align(ip_trc_status_lbl, LV_ALIGN_TOP_MID, 0, 95);
+
+    lv_obj_t* kb = lv_keyboard_create(ip_trc_input_modal);
+    lv_keyboard_set_textarea(kb, ip_trc_ta);
+    lv_keyboard_set_mode(kb, LV_KEYBOARD_MODE_TEXT_LOWER);
+    lv_obj_set_size(kb, 370, 270);
+    lv_obj_align(kb, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+    lv_obj_set_style_bg_color(kb, BG, 0);
+    lv_obj_set_style_bg_color(kb, BG, LV_PART_ITEMS);
+    lv_obj_set_style_text_color(kb, G, LV_PART_ITEMS);
+    lv_obj_set_style_border_color(kb, D, LV_PART_ITEMS);
+    lv_obj_set_style_border_width(kb, 1, LV_PART_ITEMS);
+    lv_obj_set_style_radius(kb, 0, LV_PART_ITEMS);
+    lv_obj_set_style_text_font(kb, &lv_font_montserrat_16, LV_PART_ITEMS);
+
+    lv_obj_add_event_cb(kb, [](lv_event_t* ev) {
+        lv_event_code_t code = lv_event_get_code(ev);
+        if (code == LV_EVENT_READY) {
+            haptic_click();
+            ip_trc_start_trace();
+        } else if (code == LV_EVENT_CANCEL) {
+            haptic_click();
+            ip_trc_cleanup();
+        }
+    }, LV_EVENT_ALL, nullptr);
+
+    if (WiFi.status() == WL_CONNECTED) {
+        xTaskCreate([](void* p) {
+            HTTPClient http;
+            http.begin("http://api.ipify.org");
+            http.setTimeout(3000);
+            int code = http.GET();
+            String ext_ip = "N/A";
+            if (code == 200) {
+                ext_ip = http.getString();
+                ext_ip.trim();
+            }
+            http.end();
+
+            struct AsyncData { String loc; String ext; };
+            AsyncData* data = new AsyncData{ WiFi.localIP().toString(), ext_ip };
+            
+            lv_async_call([](void* ad) {
+                AsyncData* d = (AsyncData*)ad;
+                if (ip_trc_ip_bar_lbl) {
+                    lv_label_set_text(ip_trc_ip_bar_lbl, ("LOC: " + d->loc + "  EXT: " + d->ext).c_str());
+                }
+                delete d;
+            }, data);
+
+            vTaskDelete(NULL);
+        }, "ext_ip_task", 4096, nullptr, 1, nullptr);
+    } else {
+        lv_label_set_text(ip_trc_ip_bar_lbl, ("LOC: " + local_ip + "  EXT: N/A (NO WIFI)").c_str());
+    }
+}
+
 static void led_ctrl_btn_cb(lv_event_t* e) {
     (void)e; haptic_click();
     
@@ -2180,7 +2637,8 @@ void recon_app_create(lv_obj_t *parent) {
 
     y += bh + 7;
     make_btn(scr, x, y, 115, bh, LV_SYMBOL_BLUETOOTH " WHISPER", whisper_btn_cb);
-    make_btn(scr, x+125, y, 115, bh, LV_SYMBOL_KEYBOARD " LED CTRL", led_ctrl_btn_cb);
+    make_btn(scr, x+120, y, 115, bh, LV_SYMBOL_KEYBOARD " LED CTRL", led_ctrl_btn_cb);
+    make_btn(scr, x+240, y, 113, bh, LV_SYMBOL_WARNING " IP TRC", ip_trc_btn_cb);
 
     y += bh + 15;
     lbl_results = lv_label_create(scr);
@@ -2362,6 +2820,7 @@ void recon_app_update(void) {
 }
 
 void recon_app_destroy(void) {
+    ip_trc_cleanup();
     adsb_destroy_overlay();
     recon_request_stop();
     if (adsb_airport_modal) { lv_obj_delete(adsb_airport_modal); adsb_airport_modal = nullptr; }

@@ -164,6 +164,7 @@ The SCR-Bit virtual pet evolves into an autonomous cyber-recon agent via the **P
     *   `ipsniff <ip>` / `ipsniff results` -> Perform network traffic analysis.
     *   `beaconspam <ssids>` / `beaconspam stop` -> Flood area with fake SSIDs.
     *   `adsb start <lat> <lon>` / `adsb status` -> Track local aircraft.
+    *   `ip_trc <target>` / `recon ip_trc <target>` -> Perform DNS resolution, Geo-IP lookup, and port scan. Logs auto-saved to SD card `/iptracer/tracing_X.csv`.
 *   **LoRa & Radio:**
     *   `lora start [0:Mesh, 1:Meshtastic, 2:POCSAG, 3:Bruce]` / `lora stop` / `lora send <msg>`
     *   `lora history` -> Show last 20 received mesh/chat messages.
@@ -183,7 +184,8 @@ The SCR-Bit virtual pet evolves into an autonomous cyber-recon agent via the **P
 *   **Watchface Visual Enhancements:** Real-time CPU/Internal temperature rendering (in °C) across all watchface layouts (Pip-Boy, Minimal, Analog), and an updated rounded-border visual active/inactive alarm indicator.
 
 ### 13. 💡 Utility Tools (Flashlight, Stopwatch, Timer)
-*   **Flashlight:** Toggle maximum screen brightness with a white background for emergency illumination.
+*   **Flashlight:** Multi-state emergency light toggle (Steady white light at max brightness, SOS Morse code flashing mode, and Off).
+*   **Ultrasonic Animal Repellent:** Direct I2S high-frequency sweeps (19,000 Hz to 21,800 Hz) using the watch's onboard speaker. Provides a non-lethal, variable deterrent for dogs, cats, and pests in close proximity while remaining silent to most humans.
 *   **Chronograph Suite:** Includes a high-precision Stopwatch and a programmable Countdown Timer with predefined presets and haptic alarm feedback.
 *   **LED Signage Controller:** Dedicated full-screen, ergonomically optimized keyboard mode for typing and broadcasting messages to external LED displays over WiFi.
 
@@ -337,6 +339,7 @@ Both BLE Nordic UART and HTTP `POST /api/cmd` accept single-line, `\n` (newline 
 *   **Deauth Detect (`deauth_detect`):** `{"cmd":"deauth_detect"}`
 *   **Evil Twin AP (`evil_twin`):** `{"cmd":"evil_twin", "params":{"ssid":"MyFreeWiFi","ch":1}}`
 *   **Stop Evil Twin (`evil_twin_stop`):** `{"cmd":"evil_twin_stop"}`
+*   **IP Tracer & Scanner (`recon_ip_trc`):** `{"cmd":"recon_ip_trc", "params":{"target":"google.com"}}`
 
 ---
 
@@ -522,6 +525,7 @@ SCR-Bit sanal peti, **Politician** pasif yakalama motoru sayesinde otonom bir si
     *   `ipsniff <ip>` / `ipsniff results` -> Ağ trafiğini analiz eder.
     *   `beaconspam <ssids>` / `beaconspam stop` -> Sahte SSID yayını başlatır.
     *   `adsb start <lat> <lon>` / `adsb status` -> Bölgedeki uçakları canlı takip eder.
+    *   `ip_trc <hedef>` / `recon ip_trc <hedef>` -> DNS çözümleme, Geo-IP sorgulama ve port taraması gerçekleştirir. Raporlar SD kartta `/iptracer/tracing_X.csv` olarak kaydedilir.
 *   **LoRa ve Telsiz:**
     *   `lora start [0:Mesh, 1:Meshtastic, 2:POCSAG, 3:Bruce]` / `lora stop` / `lora send <mesaj>`
     *   `lora history` -> Son alınan 20 telsiz/sohbet mesajını gösterir.
@@ -541,7 +545,8 @@ SCR-Bit sanal peti, **Politician** pasif yakalama motoru sayesinde otonom bir si
 *   **Saat Kadranı Görsel Yenilikleri:** Tüm kadran düzenlerinde (Pip-Boy, Minimal, Analog) gerçek zamanlı CPU/İç sıcaklık gösterimi (°C) ve yuvarlatılmış çerçevelere sahip, aktif/pasif alarm durumuna göre renk değiştiren yeni görsel alarm ikonu.
 
 ### 13. 💡 Günlük Araçlar (El Feneri, Kronometre, Zamanlayıcı)
-*   **El Feneri:** Ekran parlaklığını maksimuma çıkararak acil durum aydınlatması sağlar.
+*   **El Feneri:** Çok durumlu acil durum flaşörü (Maksimum parlaklıkta sabit beyaz ışık, S.O.S Mors kodu flaşör modu ve Kapalı).
+*   **Ultrasonik Hayvan Kovucu:** Saatin hoparlörünü kullanarak I2S üzerinden doğrudan yüksek frekanslı sweep (19.000 Hz ila 21.800 Hz) dalgaları yayınlar. Kedi, köpek ve haşereler için yakın mesafede caydırıcı etki oluştururken, çoğu insan tarafından duyulamaz.
 *   **Zamanlama Araçları:** Yüksek hassasiyetli Kronometre ve titreşim bildirimli (haptik), ön tanımlı sürelere sahip Geri Sayım Sayacı içerir.
 *   **LED Tabela Kontrolcüsü:** Harici LED tabelalara WiFi üzerinden metin göndermek için ergonomik, tam ekran ve Pip-Boy temasıyla uyumlu özel bir klavye modülü barındırır.
 
@@ -695,6 +700,7 @@ Hem BLE Nordic UART hem de HTTP `POST /api/cmd` istekleri tek satırlık, `\n` (
 *   **Deauth Algılayıcı (`deauth_detect`):** `{"cmd":"deauth_detect"}`
 *   **Sahte Erişim Noktası (`evil_twin`):** `{"cmd":"evil_twin", "params":{"ssid":"MyFreeWiFi","ch":1}}`
 *   **Sahte Erişimi Kapat (`evil_twin_stop`):** `{"cmd":"evil_twin_stop"}`
+*   **IP İzleyici & Tarayıcı (`recon_ip_trc`):** `{"cmd":"recon_ip_trc", "params":{"target":"google.com"}}`
 
 ---
 

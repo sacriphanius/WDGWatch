@@ -42,7 +42,7 @@ static void update_watchface_data(void);
 void setup() {
     Serial.begin(115200);
     Serial.println("\n=================================");
-    Serial.println("  WDGWatch (PipBoy-3000) v0.1.1");
+    Serial.println("  WDGWatch (PipBoy-3000) v2.5.6");
     Serial.println("  T-Watch Ultra | ESP32-S3");
     Serial.println("=================================\n");
 
@@ -154,6 +154,7 @@ void loop() {
 
     if (gps_app_is_enabled()) {
         instance.gps.loop();
+        gps_app_background_update();
     }
 
     if (watchface_alarm_is_ringing()) {
